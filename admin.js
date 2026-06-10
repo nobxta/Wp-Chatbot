@@ -24,6 +24,16 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const Groq = require('groq-sdk');
 
+// Use @sparticuz/chromium in container environments (no system GTK/ATK libs).
+// Falls back to puppeteer's bundled chrome when running locally.
+let chromiumExecPath = null;
+try {
+  const chromium = require('@sparticuz/chromium');
+  chromiumExecPath = chromium.executablePath();
+} catch {
+  // Not installed — local dev, puppeteer will use its own bundled chrome.
+}
+
 /* ============================================================
  * 1. CONFIG
  * ============================================================ */
@@ -251,11 +261,23 @@ async function updateLeadInfo(chatId) {
 
 let connected = false;
 
+const puppeteerArgs = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-accelerated-2d-canvas',
+  '--disable-gpu',
+  '--no-first-run',
+  '--no-zygote',
+  '--single-process',
+];
+
 const client = new Client({
   authStrategy: new LocalAuth({ clientId: 'travel-bot' }),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    args: puppeteerArgs,
+    ...(chromiumExecPath ? { executablePath: chromiumExecPath } : {}),
   },
 });
 
