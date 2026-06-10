@@ -24,15 +24,8 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const Groq = require('groq-sdk');
 
-// Use @sparticuz/chromium in container environments (no system GTK/ATK libs).
-// Falls back to puppeteer's bundled chrome when running locally.
+// Resolved at startup below — @sparticuz/chromium.executablePath() is async.
 let chromiumExecPath = null;
-try {
-  const chromium = require('@sparticuz/chromium');
-  chromiumExecPath = chromium.executablePath();
-} catch {
-  // Not installed — local dev, puppeteer will use its own bundled chrome.
-}
 
 /* ============================================================
  * 1. CONFIG
@@ -488,8 +481,24 @@ client.on('message', async (msg) => {
 process.on('unhandledRejection', (err) => console.error('[ERROR] Unhandled rejection:', err));
 process.on('uncaughtException', (err) => console.error('[ERROR] Uncaught exception:', err));
 
-console.log('[INFO] Starting WhatsApp AI Travel Assistant...');
-client.initialize().catch((err) => {
-  console.error('[FATAL] Failed to initialize WhatsApp client:', err.message);
-  process.exit(1);
-});
+// Resolve @sparticuz/chromium executable path (async), then start the client.
+(async () => {
+  try {
+    const chromium = require('@sparticuz/chromium');
+    chromiumExecPath = await chromium.executablePath();
+    console.log('[INFO] Using @sparticuz/chromium:', chromiumExecPath);
+  } catch {
+    console.log('[INFO] @sparticuz/chromium not found, using bundled Chrome.');
+  }
+
+  // Re-apply executablePath now that it is resolved.
+  if (chromiumExecPath) {
+    client.options.puppeteer.executablePath = chromiumExecPath;
+  }
+
+  console.log('[INFO] Starting WhatsApp AI Travel Assistant...');
+  client.initialize().catch((err) => {
+    console.error('[FATAL] Failed to initialize WhatsApp client:', err.message);
+    process.exit(1);
+  });
+})();
