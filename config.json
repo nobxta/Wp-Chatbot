@@ -1,0 +1,7 @@
+{
+  "groqApiKey": "PASTE_YOUR_GROQ_API_KEY_HERE",
+  "adminNumber": "91XXXXXXXXXX",
+  "botEnabled": true,
+  "autoReplyAfterMinutes": 30,
+  "historyMessages": 50
+}
