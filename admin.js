@@ -164,46 +164,55 @@ const groq           = new Groq({ apiKey: config.groqApiKey });
 const PRIMARY_MODEL  = 'llama-3.3-70b-versatile';
 const FALLBACK_MODEL = 'llama-3.1-8b-instant';
 
-function buildSystemPrompt(lead, useDetailed = false) {
-  const knowledge = useDetailed ? tripDetailed : tripCompact;
-  return `You are a professional travel consultant at Ghumakkars, chatting on WhatsApp. You are a real human.
+function buildSystemPrompt(lead) {
+  return `You are the WhatsApp assistant for Ghumakkars — a real human travel consultant.
 
-LANGUAGE: Detect and strictly match the customer's language every reply.
-• Hindi (देवनागरी) → pure Hindi
-• Hinglish (roman mix) → Hinglish
-• English → English
-Never switch unless they do first.
+LANGUAGE: Mirror the customer's language exactly every reply.
+Hindi script → Hindi | Hinglish → Hinglish | English → English. Never switch first.
 
-TONE: Professional, warm, helpful. WhatsApp style — 2–3 short lines max, 1 emoji max.
-Never start with "Arre", "Bhai", or the same opener twice.
-Short user message = short reply. Match energy.
+TONE: Friendly, professional, simple. WhatsApp style — 2–3 lines max, 1 emoji max.
+Never use "Arre bhai" or repeat the same opener. Match user energy.
 
-CONVERSATION RULES:
-• Answer the question FIRST. Ask one follow-up AFTER.
-• When user shows trip interest → give trip summary immediately (date, price, duration).
-• Never assume pickup city — always ask if not confirmed.
-• "Pata nahi" / "not sure" → move on, don't push.
+ANSWER FIRST, ASK AFTER:
+Answer the user's question directly before asking anything.
+Price asked → give price. Dates asked → give dates. Itinerary asked → send link.
+Only ask questions that help understand their travel need.
 
-WHAT YOU MUST NEVER DO:
-• NEVER say "booking complete", "seat confirmed", "payment received" — you don't handle payments.
-• NEVER invent prices, inclusions, dates, or hotels not in the knowledge.
-• NEVER offer discounts, negotiate price, or promise anything not in the data.
-• NEVER assume the user is from Delhi or any city without them saying so.
-• If asked for something not in the package → "That's not included in this package. For special requests contact: 📞 ${TEAM_NUMBERS}"
+NEVER INVENT OR ASSUME:
+• Never assume city, pickup, number of travellers, booking or payment status.
+• Only use facts from TRIP KNOWLEDGE below. If unsure → "Mujhe exact confirmation nahi hai. Team se verify kar ke batata hoon."
+• Never mention discounts, offers or deals not present in the knowledge.
+
+SOLO TRAVELLERS:
+If user says solo / alone / "koi nahi mere saath" → "Solo travelers are welcome in our group trips 😊"
+Do NOT discuss discounts unless explicitly in the data.
 
 OBJECTIONS:
-• "Rafting nahi karni" → "No problem at all, rafting is completely optional. The trip has plenty of other highlights."
-• "Mehnga hai" → "This is our best offer — ₹6,499 down from ₹10,000. Seat locks for just ₹1,500."
-• "Sochta hoon" → "Sure, take your time. 19 Jun batch is filling up — let me know if you have questions."
+• Rafting nahi karni → "No problem, rafting is completely optional."
+• Mehnga hai → "It's our best offer — ₹6,499 down from ₹10,000."
+• Sochna hai → "Sure, take your time. Let me know if you have questions."
 
-ABUSE: If user is rude or disrespectful → respond once professionally: "I'm here to help with trip information. Please keep the conversation respectful." Then stop engaging with the abuse.
+ABUSE / RUDE MESSAGES:
+Do NOT argue. Do NOT mention respect. Do NOT defend yourself.
+Simply ignore the insult and continue helping.
+Example: User says "teri aukat nahi" → Reply: "Trip ke baare mein koi sawaal ho toh bataiye 😊"
 
-COMPLEX/PAYMENT/COMPLAINTS: Redirect to team: 📞 ${TEAM_NUMBERS}
+FRESH START:
+If user says "hi" or "hello" after anything → always reply fresh: "Hi 👋 Kaise help kar sakta hoon?"
+Never reference previous messages negatively.
+
+FORBIDDEN:
+• "Booking complete ho gayi" • "Seat confirm ho gayi" • "Payment receive ho gaya"
+• Generating or sharing payment links • Confirming any transaction
+• Anything not in TRIP KNOWLEDGE
+
+ESCALATE TO TEAM (📞 ${TEAM_NUMBERS}) for:
+Complaints, refunds, payment issues, medical, special requests, anything complex.
 
 Customer known info: ${JSON.stringify(lead)}
 
 TRIP KNOWLEDGE:
-${knowledge}`;
+${tripCompact}`;
 }
 
 async function groqChat(messages) {
@@ -219,9 +228,9 @@ async function groqChat(messages) {
   return null;
 }
 
-async function generateReply(jid, customerMessage, useDetailed = false) {
+async function generateReply(jid, customerMessage) {
   const state    = getChatState(jid);
-  const messages = [{ role: 'system', content: buildSystemPrompt(state.lead, useDetailed) }];
+  const messages = [{ role: 'system', content: buildSystemPrompt(state.lead) }];
   for (const m of state.history.slice(-HISTORY_LIMIT))
     messages.push({ role: m.role === 'assistant' || m.role === 'admin' ? 'assistant' : 'user', content: m.text });
   messages.push({ role: 'user', content: customerMessage });
@@ -261,108 +270,50 @@ function buildHotLeadAlert(jid, lead) {
 async function handleBookingFlow(jid, text) {
   const state = getChatState(jid);
   const lead  = state.lead;
-  const step  = lead.bookingStep;
 
-  // First time hitting booking intent
-  if (!step || step === 'start') {
-    lead.bookingStep = 'name';
-    lead.stage       = 'booking_started';
-    lead.booking     = {};
-    saveMemory();
-
-    const msg = lead.history?.some(m => m.role === 'user' && /hindi|hinglish/i.test(m.text))
-      ? `Bilkul! Seat confirm karne ke liye kuch details chahiye 📋\n\nApna *pura naam* share karein:`
-      : `Sure! To confirm your seat, I need a few details 📋\n\nPlease share your *Full Name*:`;
-
-    await sock.sendMessage(jid, { text: msg });
-    await notifyAdmins(`🔔 *Booking Started*\nWhatsApp: ${jid.replace('@s.whatsapp.net','').replace('@lid','')}`);
-    return true;
-  }
-
-  if (step === 'name') {
-    if (text.trim().split(' ').length < 1 || text.trim().length < 2) {
-      await sock.sendMessage(jid, { text: 'Please share your full name:' });
-      return true;
-    }
-    lead.booking.name = text.trim();
-    lead.bookingStep  = 'age';
-    saveMemory();
-    await sock.sendMessage(jid, { text: `Got it, ${lead.booking.name}! 👍\n\nNow please share your *Age*:` });
-    return true;
-  }
-
-  if (step === 'age') {
-    lead.booking.age = text.trim();
-    lead.bookingStep = 'gender';
-    saveMemory();
-    await sock.sendMessage(jid, { text: 'And your *Gender* (Male / Female / Other):' });
-    return true;
-  }
-
-  if (step === 'gender') {
-    lead.booking.gender = text.trim();
-    lead.bookingStep    = 'city';
-    saveMemory();
-    await sock.sendMessage(jid, { text: 'Last one! Pickup city — *Delhi* or *Mathura*?' });
-    return true;
-  }
-
-  if (step === 'city') {
-    const t = text.toLowerCase();
-    if (!t.includes('delhi') && !t.includes('mathura')) {
-      await sock.sendMessage(jid, { text: 'Pickup is only available from *Delhi* or *Mathura*. Which one works for you?' });
-      return true;
-    }
-    lead.booking.city   = t.includes('delhi') ? 'Delhi' : 'Mathura';
-    lead.departureCity  = lead.booking.city;
-    lead.bookingStep    = 'payment';
-    lead.stage          = 'payment_pending';
-    lead.qualified      = true;
-    saveMemory();
-
-    const summary =
-      `✅ *Booking Details*\n\n` +
-      `👤 Name: ${lead.booking.name}\n` +
-      `🎂 Age: ${lead.booking.age}\n` +
-      `⚧ Gender: ${lead.booking.gender}\n` +
-      `🚌 Pickup: ${lead.booking.city}\n` +
-      `🏔️ Trip: Manali + Kasol | 19 Jun – 24 Jun\n\n` +
-      `To confirm your seat, pay *₹1,500* booking amount:\n\n` +
-      `💳 *Payment Link:*\n${PAYMENT_LINK}\n\n` +
-      `After payment, share the screenshot here. Our team will confirm your seat within 2 hours. 🙂`;
-
-    await sock.sendMessage(jid, { text: summary });
-
-    // Alert admins with full details
+  // Already handed off — any follow-up message from user also goes to admin
+  if (lead.stage === 'human_handoff') {
+    const phone = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
     await notifyAdmins(
-      `🔥 *PAYMENT PENDING — HOT LEAD*\n\n` +
-      `📱 WhatsApp: ${jid.replace('@s.whatsapp.net','').replace('@lid','')}\n` +
-      `👤 ${lead.booking.name} | Age: ${lead.booking.age} | ${lead.booking.gender}\n` +
-      `🚌 Pickup: ${lead.booking.city}\n` +
-      `🏔️ Manali + Kasol | 19 Jun\n\n` +
-      `💳 Payment link shared. Awaiting payment screenshot.\n` +
-      `⚡ Follow up NOW!`
+      `💬 *Follow-up from Handoff Lead*\n` +
+      `📱 ${phone}\n` +
+      `Message: "${text.slice(0, 200)}"`
     );
-    console.log(`[BOOKING] 💳 Payment link sent to ${jid}`);
+    // Only reply once every 10 mins to avoid spam
+    const lastReply = lead.lastHandoffReplyTs || 0;
+    if (Date.now() - lastReply > 10 * 60 * 1000) {
+      lead.lastHandoffReplyTs = Date.now();
+      saveMemory();
+      await sock.sendMessage(jid, {
+        text: `Team member aapko shortly connect karenge 😊\nFor urgent queries: 📞 ${TEAM_NUMBERS}`,
+      });
+    }
     return true;
   }
 
-  // After payment step — user likely sent payment screenshot or message
-  if (step === 'payment') {
-    await sock.sendMessage(jid, {
-      text: `Thank you! 🙏 Our team will verify and confirm your seat shortly.\n\nFor any queries: 📞 ${TEAM_NUMBERS}`,
-    });
-    // Notify admin that user responded after payment link
-    await notifyAdmins(
-      `📸 *Payment Response Received*\n` +
-      `📱 ${jid.replace('@s.whatsapp.net','').replace('@lid','')}\n` +
-      `👤 ${lead.booking.name || 'Unknown'}\n` +
-      `Message: "${text.slice(0, 100)}"\n\n⚡ Check and confirm manually!`
-    );
-    return true;
-  }
+  // First time booking intent detected
+  lead.stage    = 'human_handoff';
+  lead.qualified = true;
+  saveMemory();
 
-  return false;
+  const phone = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
+
+  await sock.sendMessage(jid, {
+    text: `Great 😊 Booking aur payment process hamari team handle karti hai.\n\nMain aapki request admin tak forward kar raha hoon — team aapse shortly connect karegi.\n\nYa directly contact karein: 📞 ${TEAM_NUMBERS}`,
+  });
+
+  await notifyAdmins(
+    `🔥 *HOT LEAD — BOOKING INTENT*\n\n` +
+    `📱 WhatsApp: ${phone}\n` +
+    `🏔️ Trip: Manali + Kasol | 19 Jun\n` +
+    `🚌 City: ${lead.departureCity || 'Not confirmed'}\n` +
+    `👥 Travellers: ${lead.travellers || 'Unknown'}\n` +
+    `📊 Stage: human_handoff\n\n` +
+    `⚡ User wants to BOOK. Contact NOW!`
+  );
+
+  console.log(`[HANDOFF] 🤝 ${jid} handed off to admin`);
+  return true;
 }
 
 /* ============================================================
@@ -566,13 +517,9 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 2. ABUSE
+    // 2. ABUSE — ignore insult, redirect to trip info (Rule #6)
     if (intent === 'ABUSE') {
-      lead.abuseCount = (lead.abuseCount || 0) + 1;
-      saveMemory();
-      const reply = lead.abuseCount <= 2
-        ? `I'm here to help with trip information. Please keep the conversation respectful.`
-        : `For further assistance, please contact our team directly: 📞 ${TEAM_NUMBERS}`;
+      const reply = `Trip ke baare mein koi sawaal ho toh bataiye 😊`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       return;
