@@ -393,13 +393,22 @@ async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version }          = await fetchLatestBaileysVersion();
 
+  // Fully silent logger — suppresses all Baileys internal output including
+  // "Closing session" and signal-store debug lines.
+  const noopLogger = {
+    level: 'silent',
+    trace: () => {}, debug: () => {}, info: () => {},
+    warn:  () => {}, error: () => {}, fatal: () => {},
+    child: () => noopLogger,
+  };
+
   sock = makeWASocket({
     version,
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+      keys: makeCacheableSignalKeyStore(state.keys, noopLogger),
     },
-    logger: pino({ level: 'silent' }),
+    logger: noopLogger,
     printQRInTerminal: false,
     browser: ['Ghumakkars', 'Chrome', '1.0'],
     syncFullHistory: false,
@@ -442,8 +451,10 @@ async function connectToWhatsApp() {
  * 10. MESSAGE HANDLER
  * ============================================================ */
 
-const processedIds = new Set();
-const replyLocks   = new Set();
+const processedIds  = new Set();
+const replyLocks    = new Set();
+const lastAiReply   = new Map();   // jid → timestamp of last AI call
+const AI_COOLDOWN   = 4000;        // ms between AI replies per user (prevents rapid-fire)
 
 async function handleMessage(msg) {
   if (!msg?.key?.remoteJid) return;
@@ -640,7 +651,15 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 10. GENERAL — AI with compact knowledge, no history injection of old topics
+    // 10. GENERAL — AI with compact knowledge
+    // Per-user cooldown to prevent rapid token burn
+    const lastCall = lastAiReply.get(jid) || 0;
+    if (Date.now() - lastCall < AI_COOLDOWN) {
+      console.log(`[SKIP] ${jid}: AI cooldown active`);
+      return;
+    }
+    lastAiReply.set(jid, Date.now());
+
     const reply = await generateReply(jid, displayText);
     if (!reply) {
       console.error(`[ERROR] No AI reply for ${jid}`);
