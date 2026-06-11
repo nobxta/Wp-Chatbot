@@ -140,20 +140,33 @@ function pushHistory(jid, role, text) {
  * 4. INTENT DETECTION  (code-level, runs before AI)
  * ============================================================ */
 
-const BOOK_REGEX    = /\b(book|booking|seat|advance|pay|payment|confirm|register|enroll|lena hai|le lena|le lu|buk|le loon|book kar)\b/i;
-const PRICE_REGEX   = /\b(price|kitna|cost|amount|fees|charge|rate|paisa|rupee|rs\b|₹|kitne ka|kitni|lagega|lagta)\b/i;
-const ITIN_REGEX    = /\b(itinerary|schedule|plan|details|day|programme|batao|bata|kya kya|kahan kahan|places|poora|pura|full)\b/i;
-const CANCEL_REGEX  = /\b(cancel|refund|return|wapas|nahi aana|drop|policy)\b/i;
+const GREET_REGEX   = /^(hi|hello|hey|hii|hlo|helo|good\s*(morning|evening|night|afternoon)|start|restart|namaste|namaskar|hy|sup|yo)\s*[!.]*$/i;
+const BOOK_REGEX    = /\b(book|booking|seat|advance|pay|payment|confirm|register|enroll|lena hai|le lena|le lu|buk|le loon|book kar|booking karni)\b/i;
+const PRICE_REGEX   = /\b(price|kitna|cost|amount|fees|charge|rate|paisa|rupee|rs\b|₹|kitne ka|kitni|lagega|lagta|how much)\b/i;
+const ITIN_REGEX    = /\b(itinerary|schedule|plan|details|day|programme|batao|bata|kya kya|kahan kahan|places|poora|pura|full|trip details)\b/i;
+const CANCEL_REGEX  = /\b(cancel|refund|return|wapas|nahi aana|drop|policy|cancellation)\b/i;
+const DEST_REGEX    = /\b(manali|kasol|goa|kashmir|kedarnath|shimla|leh|ladakh|spiti|rishikesh|mussoorie|nainital|dharamshala|mcleodganj)\b/i;
 const ABUSE_WORDS   = ['aukat','gali','bc ','mc ','chutiya','bhen','madarch','harami','bkl','bsdk','randi','gaand','bhench','teri maa'];
 
 function detectIntent(text) {
-  const t = text.toLowerCase();
+  const t = text.toLowerCase().trim();
   if (ABUSE_WORDS.some(w => t.includes(w))) return 'ABUSE';
+  if (GREET_REGEX.test(t))  return 'GREET';
   if (BOOK_REGEX.test(t))   return 'BOOK';
   if (PRICE_REGEX.test(t))  return 'PRICE';
   if (ITIN_REGEX.test(t))   return 'ITINERARY';
   if (CANCEL_REGEX.test(t)) return 'CANCEL';
+  if (DEST_REGEX.test(t))   return 'DESTINATION';
   return 'GENERAL';
+}
+
+// Resets topic context but keeps lead identity
+function softReset(state) {
+  state.lead.bookingStep       = null;
+  state.lead.lastHandoffReplyTs = 0;
+  // Keep stage, city, travellers — just don't reference them unprompted
+  state.history = []; // clear history so AI starts fresh
+  saveMemory();
 }
 
 /* ============================================================
@@ -500,24 +513,34 @@ async function handleMessage(msg) {
 
   try {
     // ── CODE-LEVEL INTENT DETECTION ──────────────────────────
+    // Priority: latest message > current topic > history
 
     const intent = isFirstMsg ? 'WELCOME' : detectIntent(displayText);
 
-    // 1. WELCOME
+    // 1. WELCOME (first ever message)
     if (intent === 'WELCOME') {
+      state.welcomed = true;
       const reply =
         `Hi! Welcome to Ghumakkars 👋\n\n` +
         `We run group trips every Friday.\n` +
         `Next batch: *Manali + Kasol | 19 Jun – 24 Jun*\n` +
-        `Price: *₹6,499/person* (was ₹10,000)\n\n` +
-        `Which city are you travelling from?`;
-      state.welcomed = true;
+        `💰 ₹6,499/person (was ₹10,000)\n\n` +
+        `Kisi bhi trip ke baare mein poochh sakte hain 😊`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       return;
     }
 
-    // 2. ABUSE — ignore insult, redirect to trip info (Rule #6)
+    // 2. GREET — state reset, fresh start, no old context
+    if (intent === 'GREET') {
+      softReset(state);
+      const reply = `Hi 👋 Kaise help kar sakta hoon?`;
+      pushHistory(jid, 'assistant', reply);
+      await sock.sendMessage(jid, { text: reply });
+      return;
+    }
+
+    // 3. ABUSE — ignore insult, stay helpful
     if (intent === 'ABUSE') {
       const reply = `Trip ke baare mein koi sawaal ho toh bataiye 😊`;
       pushHistory(jid, 'assistant', reply);
@@ -525,20 +548,62 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 3. BOOKING FLOW (code-controlled)
+    // 4. DESTINATION — immediate trip info, no questions first
+    if (intent === 'DESTINATION') {
+      const dest = displayText.match(DEST_REGEX)?.[0] || 'Manali';
+      const isOurTrip = /manali|kasol/i.test(dest);
+      let reply;
+      if (isOurTrip) {
+        reply =
+          `Great 😊\n\n` +
+          `*Manali + Kasol Trip*\n` +
+          `📅 19 Jun – 24 Jun\n` +
+          `💰 ₹6,499/person\n\n` +
+          `📄 Full details: ${TRIP_LINK}\n\n` +
+          `Koi specific question ho toh bataiye.`;
+        lead.destination = 'Manali + Kasol';
+      } else {
+        reply =
+          `${dest} ke liye abhi scheduled batch nahi hai.\n\n` +
+          `Hamare paas *Manali + Kasol* trip hai — 19 Jun, ₹6,499/person.\n` +
+          `Interested ho toh bataiye, ya custom trip ke liye: 📞 ${TEAM_NUMBERS}`;
+      }
+      saveMemory();
+      pushHistory(jid, 'assistant', reply);
+      await sock.sendMessage(jid, { text: reply });
+      return;
+    }
+
+    // 5. BOOKING — human handoff, no payment discussion
     if (intent === 'BOOK' || lead.bookingStep) {
       const handled = await handleBookingFlow(jid, displayText);
       if (handled) return;
     }
 
-    // 4. PRICE — quick hardcoded answer (saves tokens)
+    // 6. HUMAN_HANDOFF — still in handoff state, allow trip Qs only
+    if (lead.stage === 'human_handoff') {
+      // If it's a trip question, answer it — otherwise redirect
+      const tripQ = PRICE_REGEX.test(displayText) || ITIN_REGEX.test(displayText) || CANCEL_REGEX.test(displayText);
+      if (!tripQ) {
+        const phone = jid.replace('@s.whatsapp.net','').replace('@lid','');
+        await notifyAdmins(`💬 *Handoff follow-up*\n📱 ${phone}\n"${displayText.slice(0,200)}"`);
+        const last = lead.lastHandoffReplyTs || 0;
+        if (Date.now() - last > 10 * 60 * 1000) {
+          lead.lastHandoffReplyTs = Date.now();
+          saveMemory();
+          await sock.sendMessage(jid, { text: `Team aapko shortly connect karegi 😊\nDirect: 📞 ${TEAM_NUMBERS}` });
+        }
+        return;
+      }
+    }
+
+    // 7. PRICE — instant answer, no AI needed
     if (intent === 'PRICE') {
       const reply =
         `*Manali + Kasol | 19 Jun – 24 Jun*\n\n` +
-        `💰 Price: *₹6,499/person* (was ₹10,000)\n` +
-        `🔒 Booking amount: *₹1,500* to lock your seat\n\n` +
-        `Trip details 👉 ${TRIP_LINK}\n\n` +
-        `Ready to book?`;
+        `💰 ₹6,499/person (was ₹10,000)\n` +
+        `🔒 Booking amount: ₹1,500 to lock seat\n\n` +
+        `Full details 👉 ${TRIP_LINK}`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       lead.stage = 'price_shared';
@@ -546,18 +611,18 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 5. ITINERARY — send link + brief summary, not wall of text
+    // 8. ITINERARY — link + 6-line summary
     if (intent === 'ITINERARY') {
       const reply =
-        `Here's the full itinerary 👇\n${TRIP_LINK}\n\n` +
-        `Quick summary:\n` +
+        `Full itinerary here 👇\n${TRIP_LINK}\n\n` +
+        `*Quick Overview:*\n` +
         `Day 1 – Depart Delhi/Mathura (overnight bus)\n` +
-        `Day 2 – Arrive Manali, Hadimba Temple, Mall Road\n` +
+        `Day 2 – Manali: Hadimba Temple, Mall Road\n` +
         `Day 3 – Solang Valley, Atal Tunnel, Koksar\n` +
-        `Day 4 – Kullu sightseeing → Kasol\n` +
-        `Day 5 – Kasol cafés, riverside, return journey\n` +
-        `Day 6 – Back home\n\n` +
-        `Any questions about a specific day?`;
+        `Day 4 – Kullu sightseeing → transfer to Kasol\n` +
+        `Day 5 – Kasol: cafés, riverside, return journey\n` +
+        `Day 6 – Arrive home\n\n` +
+        `Koi specific question?`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       lead.stage = 'itinerary_sent';
@@ -565,18 +630,18 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 6. CANCELLATION — send link
+    // 9. CANCELLATION
     if (intent === 'CANCEL') {
       const reply =
-        `Our cancellation policy 👇\n${CANCEL_LINK}\n\n` +
-        `Bookings are generally non-refundable. For special cases, contact team: 📞 ${TEAM_NUMBERS}`;
+        `Cancellation policy 👇\n${CANCEL_LINK}\n\n` +
+        `For specific cases: 📞 ${TEAM_NUMBERS}`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       return;
     }
 
-    // 7. GENERAL — send to AI with compact knowledge
-    const reply = await generateReply(jid, displayText, false);
+    // 10. GENERAL — AI with compact knowledge, no history injection of old topics
+    const reply = await generateReply(jid, displayText);
     if (!reply) {
       console.error(`[ERROR] No AI reply for ${jid}`);
       return;
