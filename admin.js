@@ -411,16 +411,58 @@ async function notifyAdmins(message) {
   }
 }
 
-function buildHotLeadAlert(jid, lead) {
-  const phone = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
-  return `🔥 *HOT LEAD — ACTION REQUIRED*\n\n` +
-    `📱 WhatsApp: ${phone}\n` +
-    `👤 Name: ${lead.booking?.name || 'Not collected'}\n` +
-    `🏔️ Trip: Manali + Kasol | 19 Jun\n` +
-    `🚌 Pickup: ${lead.booking?.city || lead.departureCity || 'Not confirmed'}\n` +
-    `👥 Travellers: ${lead.travellers || 'Unknown'}\n` +
-    `📊 Stage: ${lead.stage}\n\n` +
-    `⚡ Human followup required!`;
+function buildLeadCard(jid, lead, state) {
+  const phone    = jid.replace('@s.whatsapp.net','').replace('@lid','');
+  const name     = lead.booking?.name || 'Not collected';
+  const trip     = lead.destination   || 'Manali + Kasol';
+  const city     = lead.departureCity || 'Not confirmed';
+  const pax      = lead.travellers    || 'Unknown';
+  const groupType = lead.groupType    || 'Not collected';
+
+  // Build bullet summary from history
+  const history  = (state?.history || []).slice(-12);
+  const facts    = [];
+  if (lead.destination)    facts.push(`Trip interest: ${trip}`);
+  if (lead.travellers)     facts.push(`Travellers confirmed: ${pax}`);
+  if (lead.departureCity)  facts.push(`Departure city: ${city}`);
+  if (lead.groupType)      facts.push(`Group type: ${groupType}`);
+  if (lead.booking?.name)  facts.push(`Name shared: ${name}`);
+
+  const lastUserMsg = [...history].reverse().find(m => m.role === 'user')?.text || '';
+
+  return (
+    `🔥 *HOT LEAD — BOOKING INTENT*\n\n` +
+    `📱 WhatsApp: +${phone}\n` +
+    `👤 Name: ${name}\n` +
+    `🏔️ Trip: ${trip}\n` +
+    `🚌 Departure: ${city} → Delhi Akshardham\n` +
+    `👥 Travellers: ${pax}\n` +
+    `👥 Group type: ${groupType}\n` +
+    `📊 Booking intent: HIGH\n\n` +
+    (facts.length ? `📋 *Conversation summary:*\n${facts.map(f => `• ${f}`).join('\n')}\n\n` : '') +
+    `💬 *Latest message:* "${lastUserMsg.slice(0,120)}"\n\n` +
+    `⚡ *Action: Call or message immediately. High-conversion lead.*`
+  );
+}
+
+function buildFollowUpAlert(jid, lead, message) {
+  const phone      = jid.replace('@s.whatsapp.net','').replace('@lid','');
+  const name       = lead.booking?.name || 'Not collected';
+  const trip       = lead.destination   || 'Manali + Kasol';
+  const pax        = lead.travellers    || 'Unknown';
+  const city       = lead.departureCity || 'Unknown';
+  const minsSince  = lead.handoffTs
+    ? Math.round((Date.now() - lead.handoffTs) / 60000)
+    : null;
+
+  return (
+    `💬 *LEAD REPLIED*\n\n` +
+    `📱 +${phone} | 👤 ${name}\n` +
+    `🏔️ ${trip} | 👥 ${pax} travellers | 🚌 ${city}\n\n` +
+    `💬 Message: "${message.slice(0,200)}"\n` +
+    (minsSince !== null ? `⏰ ${minsSince}m since handoff\n` : '') +
+    `📌 Status: Waiting for human response.`
+  );
 }
 
 /* ============================================================
@@ -430,27 +472,40 @@ function buildHotLeadAlert(jid, lead) {
 async function handleBookingFlow(jid, text) {
   const state = getChatState(jid);
   const lead  = state.lead;
-  const phone = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
+
+  // Migrate legacy human_handoff stage so old memory doesn't break
+  if (lead.stage === 'human_handoff') {
+    lead.stage         = 'booking_intent';
+    lead.adminNotified = lead.adminNotified || true;
+    saveMemory();
+  }
 
   if (!lead.adminNotified) {
-    // First booking signal — notify admin silently in background, keep chatting normally
+    // First booking signal — notify admin once, keep chatting normally
     lead.adminNotified = true;
+    lead.handoffTs     = Date.now();
     lead.stage         = 'booking_intent';
     lead.qualified     = true;
     saveMemory();
-    await notifyAdmins(
-      `🔥 *HOT LEAD — BOOKING INTENT*\n\n` +
-      `📱 WhatsApp: ${phone}\n` +
-      `🏔️ Trip: Manali + Kasol\n` +
-      `🚌 City: ${lead.departureCity || 'Not confirmed'}\n` +
-      `👥 Travellers: ${lead.travellers || 'Unknown'}\n\n` +
-      `⚡ User wants to book. Contact NOW!`
-    );
+    await notifyAdmins(buildLeadCard(jid, lead, state));
     console.log(`[HOT LEAD] 🔥 ${jid} — booking intent, admin notified`);
   }
 
-  // Let AI answer naturally — it knows from prompt not to confirm payment/booking
+  // Let AI answer naturally — prompt prevents fake confirmations
   return false;
+}
+
+// Call this when user sends a message after handoff — sends rich follow-up alert (once per 5 min)
+async function notifyFollowUp(jid, lead, message) {
+  // Skip pure acks — admin doesn't need to know about "ok" / "thanks"
+  if (ACK_REGEX.test(message.trim())) return;
+
+  const last = lead.lastFollowUpTs || 0;
+  if (Date.now() - last < 5 * 60 * 1000) return; // 5-min cooldown
+
+  lead.lastFollowUpTs = Date.now();
+  saveMemory();
+  await notifyAdmins(buildFollowUpAlert(jid, lead, message));
 }
 
 /* ============================================================
@@ -805,14 +860,15 @@ async function handleMessage(msg) {
       // Already in conversation — fall through to AI for contextual reply
     }
 
-    // 5. BOOKING — human handoff, no payment discussion
+    // 5. BOOKING — notify admin once, bot keeps chatting normally
     if (intent === 'BOOK' || lead.bookingStep) {
-      const handled = await handleBookingFlow(jid, displayText);
-      if (handled) return;
+      await handleBookingFlow(jid, displayText); // always returns false now
     }
 
-    // 6. booking_intent stage — admin already notified, conversation continues normally
-    // No wall, no lock. Bot keeps chatting. Admin reaches out in parallel.
+    // 6. Already a booking lead — send rich follow-up alert to admin (5-min cooldown, no acks)
+    if (lead.adminNotified) {
+      await notifyFollowUp(jid, lead, displayText);
+    }
 
     // 7. PRICE — instant answer, no AI needed
     if (intent === 'PRICE') {
