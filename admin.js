@@ -860,9 +860,7 @@ async function connectToWhatsApp() {
 
 const processedIds   = new Set();
 const replyLocks     = new Set();
-const lastAiReply    = new Map();   // jid → timestamp of last AI call
-const pendingMsgs    = new Map();   // jid → { timer, texts[] } — buffer rapid messages
-const AI_COOLDOWN    = 1500;        // ms — only guards true duplicates, not fast typers
+const lastAiReply    = new Map();
 
 async function handleMessage(msg) {
   if (!msg?.key?.remoteJid) return;
@@ -928,6 +926,12 @@ async function handleMessage(msg) {
   const isFirstMsg    = state.history.length === 0 && !state.welcomed;
   const lead          = state.lead;
 
+  // Ignore pure gibberish (only symbols/spaces, no alphanumeric content)
+  if (/^[^a-zA-Z0-9ऀ-ॿ]+$/.test(displayText) && displayText.length < 5) {
+    console.log(`[SKIP] ${jid}: gibberish ignored: "${displayText}"`);
+    return;
+  }
+
   pushHistory(jid, 'user', displayText);
 
   if (!config.botEnabled) return;
@@ -939,7 +943,13 @@ async function handleMessage(msg) {
     return;
   }
 
-  if (replyLocks.has(jid)) return;
+  // If bot is already processing a reply for this user, buffer this message and exit.
+  // The current in-flight AI call will already have prior history; the next message
+  // will trigger a fresh reply with full updated history.
+  if (replyLocks.has(jid)) {
+    console.log(`[BUFFER] ${jid}: queued while reply in progress: "${displayText.slice(0,40)}"`);
+    return;
+  }
   replyLocks.add(jid);
 
   try {
@@ -987,46 +997,20 @@ async function handleMessage(msg) {
     }
 
     // ALL INTENTS → AI
-    // Buffer rapid messages: if user sends multiple messages in 2s, batch them.
-    // This prevents "3 July" → skip → "Vivek" → skip → bot never answers.
-    await new Promise(resolve => {
-      const existing = pendingMsgs.get(jid);
-      if (existing) {
-        clearTimeout(existing.timer);
-        existing.texts.push(displayText);
-      } else {
-        pendingMsgs.set(jid, { texts: [], timer: null });
-      }
-      const entry = pendingMsgs.get(jid);
-      entry.timer = setTimeout(resolve, 2000);
-    });
-    // Collect any buffered messages that arrived during the wait
-    const buffered = pendingMsgs.get(jid)?.texts || [];
-    pendingMsgs.delete(jid);
-    // Add buffered messages to history so AI sees the full sequence
-    for (const t of buffered) {
-      pushHistory(jid, 'user', t);
-    }
+    // Small delay so rapid follow-up messages land in history before AI reads it
+    await new Promise(r => setTimeout(r, 800));
 
-    const lastCall = lastAiReply.get(jid) || 0;
-    if (Date.now() - lastCall < AI_COOLDOWN) {
-      console.log(`[SKIP] ${jid}: duplicate within cooldown`);
-      return;
-    }
     lastAiReply.set(jid, Date.now());
 
     // Mark welcomed so next message doesn't repeat intro logic
     if (intent === 'WELCOME') state.welcomed = true;
 
-    // Build combined prompt from original + any buffered follow-ups
-    const combinedText = buffered.length
-      ? `${displayText}\n${buffered.join('\n')}`
-      : displayText;
+    const combinedText = displayText;
 
     let reply = await generateReply(jid, combinedText);
     if (!reply) {
       console.error(`[ERROR] No AI reply for ${jid} | msg: "${displayText.slice(0, 60)}"`);
-      reply = `Haan bhai, thoda clear karo — kaunsa batch dekh rahe ho?`;
+      reply = `Haan bhai, ek second — kuch technical issue tha. Dobara batao kya poochna tha?`;
     }
     pushHistory(jid, 'assistant', reply);
     await sock.sendMessage(jid, { text: reply });
