@@ -295,8 +295,10 @@ async function callAI(messages) {
       }
     } else if (model.provider === 'nvidia') {
       const client = getNvidiaClient(model.apiKey);
-      const res = await client.chat.completions.create({ model: model.model, messages, temperature: 0.4, max_tokens: 200 });
-      const text = res.choices?.[0]?.message?.content?.trim();
+      const res = await client.chat.completions.create({ model: model.model, messages, temperature: 0.4, max_tokens: 500 });
+      const msg = res.choices?.[0]?.message;
+      // Reasoning models return null content — fall back to reasoning_content
+      const text = (msg?.content || msg?.reasoning_content || '').trim();
       if (text) return text;
     }
   } catch (err) {
