@@ -210,6 +210,11 @@ function softReset(state) {
  * Add more entries here anytime.
  */
 
+// Test results (2026-06-16):
+// StepFun 3.7 Flash — reasoning model, answer in content, thinking in reasoning_content. Fast. ✅
+// GPT OSS 120B      — reasoning model, answer in content, needs max_tokens>=600 for long prompts. ✅
+// Kimi K2.6         — 500 without thinking param, garbage output with it. UNRELIABLE ❌
+// GLM 5.1           — 128k context, clean replies, fastest. Best NVIDIA option. ✅
 const AI_MODELS = [
   {
     id: 1,
@@ -227,33 +232,36 @@ const AI_MODELS = [
   },
   {
     id: 3,
-    name: 'NVIDIA — StepFun 3.7 Flash',
+    name: 'NVIDIA — StepFun 3.7 Flash (reasoning)',
     provider: 'nvidia',
     model: 'stepfun-ai/step-3.7-flash',
     apiKey: () => config.nvidiaApiKey1,
+    maxTokens: 800,  // reasoning model needs headroom for thinking + answer
   },
   {
     id: 4,
-    name: 'NVIDIA — GPT OSS 120B',
+    name: 'NVIDIA — GPT OSS 120B (reasoning)',
     provider: 'nvidia',
     model: 'openai/gpt-oss-120b',
     apiKey: () => config.nvidiaApiKey2,
+    maxTokens: 800,
   },
   {
     id: 5,
-    name: 'NVIDIA — Kimi K2.6 (reasoning)',
-    provider: 'nvidia',
-    model: 'moonshotai/kimi-k2.6',
-    apiKey: () => config.nvidiaApiKey3,
-    extraBody: { chat_template_kwargs: { thinking: true } },
-  },
-  {
-    id: 6,
-    name: 'NVIDIA — GLM 5.1',
+    name: 'NVIDIA — GLM 5.1 (128k ctx) ⭐',
     provider: 'nvidia',
     model: 'z-ai/glm-5.1',
     apiKey: () => config.nvidiaApiKey4,
-    // chat_template_kwargs causes 400 in non-streaming mode — not supported
+    maxTokens: 600,
+  },
+  {
+    id: 6,
+    name: 'NVIDIA — Kimi K2.6 [unreliable]',
+    provider: 'nvidia',
+    model: 'moonshotai/kimi-k2.6',
+    apiKey: () => config.nvidiaApiKey3,
+    maxTokens: 600,
+    // thinking param causes garbage output; without it causes 500 — avoid
   },
 ];
 
@@ -521,7 +529,7 @@ async function callAI(messages) {
       }
     } else if (model.provider === 'nvidia') {
       const client = getNvidiaClient(model.apiKey());
-      const params = { model: model.model, messages, temperature: 0.4, max_tokens: 500 };
+      const params = { model: model.model, messages, temperature: 0.4, max_tokens: model.maxTokens || 600 };
       if (model.extraBody) params.extra_body = model.extraBody;
       try {
         const res = await client.chat.completions.create(params);
