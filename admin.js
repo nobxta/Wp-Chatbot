@@ -7,9 +7,10 @@
 
 'use strict';
 
-const fs   = require('fs');
-const path = require('path');
-const Groq = require('groq-sdk');
+const fs     = require('fs');
+const path   = require('path');
+const Groq   = require('groq-sdk');
+const OpenAI = require('openai');
 
 const {
   default: makeWASocket,
@@ -170,12 +171,62 @@ function softReset(state) {
 }
 
 /* ============================================================
- * 5. GROQ AI
- * ============================================================ */
+ * 5. MULTI-PROVIDER AI
+ * ============================================================
+ * Model list — admin selects by number via /model N
+ * Add more entries here anytime.
+ */
 
-const groq           = new Groq({ apiKey: config.groqApiKey });
-const PRIMARY_MODEL  = 'llama-3.3-70b-versatile';
-const FALLBACK_MODEL = 'llama-3.1-8b-instant';
+const AI_MODELS = [
+  {
+    id: 1,
+    name: 'Groq — Llama 3.3 70B',
+    provider: 'groq',
+    model: 'llama-3.3-70b-versatile',
+    fallback: 'llama-3.1-8b-instant',
+  },
+  {
+    id: 2,
+    name: 'Groq — Llama 3.1 8B Fast',
+    provider: 'groq',
+    model: 'llama-3.1-8b-instant',
+    fallback: null,
+  },
+  {
+    id: 3,
+    name: 'NVIDIA — StepFun 3.7 Flash',
+    provider: 'nvidia',
+    model: 'stepfun-ai/step-3.7-flash',
+    apiKey: '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',
+  },
+  {
+    id: 4,
+    name: 'NVIDIA — GPT OSS 120B',
+    provider: 'nvidia',
+    model: 'openai/gpt-oss-120b',
+    apiKey: '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',
+  },
+];
+
+// Active model index — persisted in config.json
+let activeModelId = config.activeModel || 1;
+function getActiveModel() {
+  return AI_MODELS.find(m => m.id === activeModelId) || AI_MODELS[0];
+}
+
+// Provider clients
+const groq = new Groq({ apiKey: config.groqApiKey });
+
+const nvidiaClients = {};
+function getNvidiaClient(apiKey) {
+  if (!nvidiaClients[apiKey]) {
+    nvidiaClients[apiKey] = new OpenAI({
+      apiKey,
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+    });
+  }
+  return nvidiaClients[apiKey];
+}
 
 function buildSystemPrompt(lead) {
   return `You are the WhatsApp assistant for Ghumakkars — a real human travel consultant.
@@ -228,15 +279,28 @@ TRIP KNOWLEDGE:
 ${tripCompact}`;
 }
 
-async function groqChat(messages) {
-  for (const model of [PRIMARY_MODEL, FALLBACK_MODEL]) {
-    try {
-      const res = await groq.chat.completions.create({ model, messages, temperature: 0.4, max_tokens: 200 });
+async function callAI(messages) {
+  const model = getActiveModel();
+  try {
+    if (model.provider === 'groq') {
+      const modelsToTry = [model.model, model.fallback].filter(Boolean);
+      for (const m of modelsToTry) {
+        try {
+          const res = await groq.chat.completions.create({ model: m, messages, temperature: 0.4, max_tokens: 200 });
+          const text = res.choices?.[0]?.message?.content?.trim();
+          if (text) return text;
+        } catch (err) {
+          console.error(`[ERROR] Groq (${m}):`, err.message);
+        }
+      }
+    } else if (model.provider === 'nvidia') {
+      const client = getNvidiaClient(model.apiKey);
+      const res = await client.chat.completions.create({ model: model.model, messages, temperature: 0.4, max_tokens: 200 });
       const text = res.choices?.[0]?.message?.content?.trim();
       if (text) return text;
-    } catch (err) {
-      console.error(`[ERROR] Groq (${model}):`, err.message);
     }
+  } catch (err) {
+    console.error(`[ERROR] AI (${model.name}):`, err.message);
   }
   return null;
 }
@@ -247,7 +311,7 @@ async function generateReply(jid, customerMessage) {
   for (const m of state.history.slice(-HISTORY_LIMIT))
     messages.push({ role: m.role === 'assistant' || m.role === 'admin' ? 'assistant' : 'user', content: m.text });
   messages.push({ role: 'user', content: customerMessage });
-  return groqChat(messages);
+  return callAI(messages);
 }
 
 /* ============================================================
@@ -372,9 +436,31 @@ async function handleAdminCommand(jid, text) {
     await sock.sendMessage(jid, { text: `🔥 *Hot Leads*\n\n${hot}` });
     return true;
   }
+  if (cmd === '/model') {
+    const active = getActiveModel();
+    const list = AI_MODELS.map(m => `${m.id === active.id ? '✅' : '  '} ${m.id}. ${m.name}`).join('\n');
+    await sock.sendMessage(jid, {
+      text: `🤖 *AI Models*\n\n${list}\n\nSwitch: /model <number>`,
+    });
+    return true;
+  }
+  const modelMatch = cmd.match(/^\/model\s+(\d+)$/);
+  if (modelMatch) {
+    const id = parseInt(modelMatch[1], 10);
+    const found = AI_MODELS.find(m => m.id === id);
+    if (!found) {
+      await sock.sendMessage(jid, { text: `❌ Model ${id} not found. Send /model to see options.` });
+      return true;
+    }
+    activeModelId = id;
+    config.activeModel = id;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    await sock.sendMessage(jid, { text: `✅ Switched to: *${found.name}*` });
+    return true;
+  }
   if (cmd === '/help') {
     await sock.sendMessage(jid, {
-      text: '🛠 *Admin Commands*\n\n/ai on — enable AI\n/ai off — disable AI\n/status — stats\n/leads — hot leads list\n/help — this menu',
+      text: '🛠 *Admin Commands*\n\n/ai on — enable AI\n/ai off — disable AI\n/status — stats\n/leads — hot leads list\n/model — list AI models\n/model N — switch to model N\n/help — this menu',
     });
     return true;
   }
