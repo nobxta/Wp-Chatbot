@@ -205,14 +205,14 @@ const AI_MODELS = [
     name: 'NVIDIA — StepFun 3.7 Flash',
     provider: 'nvidia',
     model: 'stepfun-ai/step-3.7-flash',
-    apiKey: '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',
+    apiKey: () => config.nvidiaApiKey1,
   },
   {
     id: 4,
     name: 'NVIDIA — GPT OSS 120B',
     provider: 'nvidia',
     model: 'openai/gpt-oss-120b',
-    apiKey: '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',
+    apiKey: () => config.nvidiaApiKey2,
   },
 ];
 
@@ -302,7 +302,7 @@ async function callAI(messages) {
         }
       }
     } else if (model.provider === 'nvidia') {
-      const client = getNvidiaClient(model.apiKey);
+      const client = getNvidiaClient(model.apiKey());
       const res = await client.chat.completions.create({ model: model.model, messages, temperature: 0.4, max_tokens: 500 });
       const msg = res.choices?.[0]?.message;
       const showReasoning = config.showReasoning === true;
@@ -583,14 +583,6 @@ async function handleMessage(msg) {
     m?.imageMessage?.caption ||
     m?.videoMessage?.caption || '';
 
-  // Track outgoing (admin) messages
-  if (fromMe) {
-    const state = getChatState(jid);
-    state.lastAdminReplyTs = Date.now();
-    if (rawText) pushHistory(jid, 'admin', rawText);
-    return;
-  }
-
   // De-duplicate
   const msgId = msg.key.id;
   if (msgId) {
@@ -600,13 +592,25 @@ async function handleMessage(msg) {
   }
 
   const text    = rawText.trim();
-  const isAdmin = ADMIN_JIDS.includes(jid);
+  // Support both @s.whatsapp.net and @lid JID formats for admin check
+  const jidNorm = jid.replace('@lid', '@s.whatsapp.net');
+  const isAdmin = ADMIN_JIDS.includes(jid) || ADMIN_JIDS.includes(jidNorm);
 
-  // Admin commands
+  // Admin commands — check BEFORE fromMe guard so commands sent from admin's
+  // own phone (fromMe=true) are still processed
   if (isAdmin && text.startsWith('/')) {
     const handled = await handleAdminCommand(jid, text);
     if (handled) return;
   }
+
+  // Track outgoing (bot/admin) messages — after command check
+  if (fromMe) {
+    const state = getChatState(jid);
+    state.lastAdminReplyTs = Date.now();
+    if (rawText) pushHistory(jid, 'admin', rawText);
+    return;
+  }
+
   if (isAdmin) return; // never auto-reply to admin chat
 
   // Media without caption
