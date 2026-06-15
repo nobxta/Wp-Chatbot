@@ -387,8 +387,11 @@ async function callAI(messages) {
       const modelsToTry = [model.model, model.fallback].filter(Boolean);
       for (const m of modelsToTry) {
         try {
-          const res = await groq.chat.completions.create({ model: m, messages, temperature: 0.4, max_tokens: 200 });
+          const res = await groq.chat.completions.create({ model: m, messages, temperature: 0.4, max_tokens: 400 });
           const text = res.choices?.[0]?.message?.content?.trim();
+          if (!text) {
+            console.warn(`[WARN] Groq (${m}) returned empty content. finish_reason: ${res.choices?.[0]?.finish_reason}`);
+          }
           if (text) return text;
         } catch (err) {
           console.error(`[ERROR] Groq (${m}):`, err.message);
@@ -399,8 +402,8 @@ async function callAI(messages) {
       const res = await client.chat.completions.create({ model: model.model, messages, temperature: 0.4, max_tokens: 500 });
       const msg = res.choices?.[0]?.message;
       const showReasoning = config.showReasoning === true;
-      // Reasoning models may return null content; fall back to reasoning_content only when enabled
       const text = (msg?.content || (showReasoning ? msg?.reasoning_content : '') || '').trim();
+      if (!text) console.warn(`[WARN] NVIDIA (${model.model}) returned empty. finish_reason: ${res.choices?.[0]?.finish_reason}`);
       if (text) return text;
     }
   } catch (err) {
@@ -968,10 +971,11 @@ async function handleMessage(msg) {
     }
     lastAiReply.set(jid, Date.now());
 
-    const reply = await generateReply(jid, displayText);
+    let reply = await generateReply(jid, displayText);
     if (!reply) {
-      console.error(`[ERROR] No AI reply for ${jid}`);
-      return;
+      console.error(`[ERROR] No AI reply for ${jid} | msg: "${displayText.slice(0, 60)}"`);
+      // Never go silent — ask a clarifying question rather than dead chat
+      reply = `Samajh nahi aaya 😅 thoda aur batao — kya plan hai?`;
     }
     pushHistory(jid, 'assistant', reply);
     await sock.sendMessage(jid, { text: reply });
