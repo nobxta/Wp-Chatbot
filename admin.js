@@ -168,11 +168,13 @@ const ITIN_REGEX    = /\b(itinerary|schedule|plan|details|day|programme|batao|ba
 const CANCEL_REGEX  = /\b(cancel|refund|return|wapas|nahi aana|drop|policy|cancellation)\b/i;
 const DEST_REGEX    = /\b(manali|kasol|goa|kashmir|kedarnath|shimla|leh|ladakh|spiti|rishikesh|mussoorie|nainital|dharamshala|mcleodganj)\b/i;
 const ABUSE_WORDS   = ['aukat','gali','bc ','mc ','chutiya','bhen','madarch','harami','bkl','bsdk','randi','gaand','bhench','teri maa'];
+const BYE_REGEX     = /^(bye|goodbye|ok bye|tata|alvida|chal bye|ok thanks|thank you|thanks|no thanks|nahi chahiye|nhi chahiye|nahi\s*ji|nope|not interested|nahi\s*chahiye)\s*[!.]*$/i;
 
 function detectIntent(text) {
   const t = text.toLowerCase().trim();
   if (ABUSE_WORDS.some(w => t.includes(w))) return 'ABUSE';
   if (GREET_REGEX.test(t))  return 'GREET';
+  if (BYE_REGEX.test(t))    return 'BYE';
   if (BOOK_REGEX.test(t))   return 'BOOK';
   if (PRICE_REGEX.test(t))  return 'PRICE';
   if (ITIN_REGEX.test(t))   return 'ITINERARY';
@@ -249,51 +251,41 @@ function getNvidiaClient(apiKey) {
 }
 
 function buildSystemPrompt(lead) {
-  return `You are the WhatsApp assistant for Ghumakkars — a real human travel consultant.
+  return `You are Kartik — a friendly human travel consultant at Ghumakkars. You talk on WhatsApp.
 
-LANGUAGE: Mirror the customer's language exactly every reply.
-Hindi script → Hindi | Hinglish → Hinglish | English → English. Never switch first.
+═══ LANGUAGE ═══
+Mirror the customer exactly. Hindi → Hindi. English → English. Hinglish → Hinglish. Never switch first.
 
-TONE: Friendly, professional, simple. WhatsApp style — 2–3 lines max, 1 emoji max.
-Never use "Arre bhai" or repeat the same opener. Match user energy.
+═══ TONE & STYLE ═══
+• Real human, not a bot. Warm, casual, respectful.
+• 2–3 lines max per reply. One emoji max. No bullet lists. No "---" dividers. No bold headers.
+• Address user naturally: "bhai/bro" if they use it, "sir/ma'am" for formal, first name if known.
+• Never send the same reply twice in a row. Every message must feel fresh and contextual.
+• Match their energy — if they're excited, be warm. If they're leaving, be gracious.
 
-ANSWER FIRST, ASK AFTER:
-Answer the user's question directly before asking anything.
-Price asked → give price. Dates asked → give dates. Itinerary asked → send link.
-Only ask questions that help understand their travel need.
+═══ CONVERSATION FLOW ═══
+1. Always answer what they actually asked — don't redirect to a generic trip pitch.
+2. If they share a concern ("kasol first", "not interested") — acknowledge it directly, don't ignore it.
+3. Gently hold the lead — one soft question or offer to help, without being pushy.
+4. If they say bye/not interested — wish them well genuinely. Don't chase.
+   Example: "No worries at all 😊 Whenever you plan a trip, we're here!"
+5. Never repeat the same message twice. Read the conversation and respond to WHAT THEY SAID.
 
-NEVER INVENT OR ASSUME:
-• Never assume city, pickup, number of travellers, booking or payment status.
-• Only use facts from TRIP KNOWLEDGE below. If unsure → "Mujhe exact confirmation nahi hai. Team se verify kar ke batata hoon."
-• Never mention discounts, offers or deals not present in the knowledge.
+═══ OBJECTION HANDLING ═══
+• "Mehnga hai" → "Totally get it. It's already down from ₹10,000 — and includes stay, meals, transport. Quite value for 6 days."
+• "Sochna hai" → "Of course, take your time. Anything specific I can help you decide?"
+• "Rafting nahi" → "No problem at all, it's completely optional."
+• "I want kasol first" → "Kasol is beautiful! Our trip covers both — Manali first then Kasol. You'll love the kasol side on Day 4–5."
+• "Not interested" / "bye" → Wish them well, leave the door open. Don't push.
 
-SOLO TRAVELLERS:
-If user says solo / alone / "koi nahi mere saath" → "Solo travelers are welcome in our group trips 😊"
-Do NOT discuss discounts unless explicitly in the data.
+═══ RULES ═══
+• Never assume pickup city, group size, or payment unless user said so.
+• Only use facts from TRIP KNOWLEDGE. If unsure → "Let me check that with the team and get back to you."
+• Never say "booking confirmed", "seat booked", "payment received".
+• Never share a payment link.
+• Abuse/insults → ignore completely, gently redirect to trip topic.
 
-OBJECTIONS:
-• Rafting nahi karni → "No problem, rafting is completely optional."
-• Mehnga hai → "It's our best offer — ₹6,499 down from ₹10,000."
-• Sochna hai → "Sure, take your time. Let me know if you have questions."
-
-ABUSE / RUDE MESSAGES:
-Do NOT argue. Do NOT mention respect. Do NOT defend yourself.
-Simply ignore the insult and continue helping.
-Example: User says "teri aukat nahi" → Reply: "Trip ke baare mein koi sawaal ho toh bataiye 😊"
-
-FRESH START:
-If user says "hi" or "hello" after anything → always reply fresh: "Hi 👋 Kaise help kar sakta hoon?"
-Never reference previous messages negatively.
-
-FORBIDDEN:
-• "Booking complete ho gayi" • "Seat confirm ho gayi" • "Payment receive ho gaya"
-• Generating or sharing payment links • Confirming any transaction
-• Anything not in TRIP KNOWLEDGE
-
-ESCALATE TO TEAM (📞 ${TEAM_NUMBERS}) for:
-Complaints, refunds, payment issues, medical, special requests, anything complex.
-
-Customer known info: ${JSON.stringify(lead)}
+Customer info: ${JSON.stringify(lead)}
 
 TRIP KNOWLEDGE:
 ${tripCompact}`;
@@ -695,38 +687,50 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 3. ABUSE — ignore insult, stay helpful
-    if (intent === 'ABUSE') {
-      const reply = `Trip ke baare mein koi sawaal ho toh bataiye 😊`;
+    // 3. BYE / NOT INTERESTED — graceful exit, leave door open
+    if (intent === 'BYE') {
+      const reply = await generateReply(jid, displayText) ||
+        `No worries at all 😊 Whenever you plan a trip, we're here for you. Take care!`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       return;
     }
 
-    // 4. DESTINATION — immediate trip info, no questions first
-    if (intent === 'DESTINATION') {
-      const dest = displayText.match(DEST_REGEX)?.[0] || 'Manali';
-      const isOurTrip = /manali|kasol/i.test(dest);
-      let reply;
-      if (isOurTrip) {
-        reply =
-          `Great 😊\n\n` +
-          `*Manali + Kasol Trip*\n` +
-          `📅 19 Jun – 24 Jun\n` +
-          `💰 ₹6,499/person\n\n` +
-          `📄 Full details: ${TRIP_LINK}\n\n` +
-          `Koi specific question ho toh bataiye.`;
-        lead.destination = 'Manali + Kasol';
-      } else {
-        reply =
-          `${dest} ke liye abhi scheduled batch nahi hai.\n\n` +
-          `Hamare paas *Manali + Kasol* trip hai — 19 Jun, ₹6,499/person.\n` +
-          `Interested ho toh bataiye, ya custom trip ke liye: 📞 ${TEAM_NUMBERS}`;
-      }
-      saveMemory();
+    // 4. ABUSE — ignore insult, stay helpful
+    if (intent === 'ABUSE') {
+      const reply = `Koi trip sawaal ho toh bataiye 😊`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       return;
+    }
+
+    // 4. DESTINATION — only send canned intro if this is first trip mention, else let AI handle contextually
+    if (intent === 'DESTINATION') {
+      const dest = displayText.match(DEST_REGEX)?.[0] || 'Manali';
+      const isOurTrip = /manali|kasol/i.test(dest);
+      const alreadyDiscussed = state.history.length > 2;
+      if (isOurTrip && !alreadyDiscussed) {
+        // First mention — give quick intro, then let AI continue
+        const reply =
+          `Great choice! Manali + Kasol trip chal rahi hai 😊\n` +
+          `📅 19 Jun – 24 Jun | 💰 ₹6,499/person\n\n` +
+          `Details: ${TRIP_LINK}\n\nKoi sawaal ho toh poochho!`;
+        lead.destination = 'Manali + Kasol';
+        saveMemory();
+        pushHistory(jid, 'assistant', reply);
+        await sock.sendMessage(jid, { text: reply });
+        return;
+      } else if (!isOurTrip && !alreadyDiscussed) {
+        const reply =
+          `${dest} ke liye abhi batch nahi hai.\n` +
+          `Hamare paas Manali + Kasol trip hai — 19 Jun, ₹6,499/person.\n` +
+          `Interested ho toh bataiye 😊`;
+        saveMemory();
+        pushHistory(jid, 'assistant', reply);
+        await sock.sendMessage(jid, { text: reply });
+        return;
+      }
+      // Already in conversation — fall through to AI for contextual reply
     }
 
     // 5. BOOKING — human handoff, no payment discussion
