@@ -523,12 +523,29 @@ async function callAI(messages) {
       const client = getNvidiaClient(model.apiKey());
       const params = { model: model.model, messages, temperature: 0.4, max_tokens: 500 };
       if (model.extraBody) params.extra_body = model.extraBody;
-      const res = await client.chat.completions.create(params);
-      const msg = res.choices?.[0]?.message;
-      const showReasoning = config.showReasoning === true;
-      const text = (msg?.content || (showReasoning ? msg?.reasoning_content : '') || '').trim();
-      if (!text) console.warn(`[WARN] NVIDIA (${model.model}) returned empty. finish_reason: ${res.choices?.[0]?.finish_reason}`);
-      if (text) return text;
+      try {
+        const res = await client.chat.completions.create(params);
+        const msg = res.choices?.[0]?.message;
+        const showReasoning = config.showReasoning === true;
+        const text = (msg?.content || (showReasoning ? msg?.reasoning_content : '') || '').trim();
+        if (!text) console.warn(`[WARN] NVIDIA (${model.model}) returned empty. finish_reason: ${res.choices?.[0]?.finish_reason}`);
+        if (text) return text;
+      } catch (err) {
+        console.error(`[ERROR] AI (${model.name}):`, err.message);
+        // Rate limited or NVIDIA down — fall back to Groq automatically
+        console.warn(`[FALLBACK] NVIDIA failed, switching to Groq llama-3.3-70b`);
+        const modelsToTry = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+        for (const m of modelsToTry) {
+          try {
+            const res = await groq.chat.completions.create({ model: m, messages, temperature: 0.4, max_tokens: 400 });
+            const text = res.choices?.[0]?.message?.content?.trim();
+            if (text) return text;
+          } catch (e) {
+            console.error(`[ERROR] Groq fallback (${m}):`, e.message);
+          }
+        }
+      }
+      return null;
     }
   } catch (err) {
     console.error(`[ERROR] AI (${model.name}):`, err.message);
