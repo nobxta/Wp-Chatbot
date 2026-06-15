@@ -7,6 +7,14 @@
 
 'use strict';
 
+// Suppress Baileys internal console.log output (e.g. "Closing session: SessionEntry {...}")
+const _origLog = console.log.bind(console);
+console.log = (...args) => {
+  const first = typeof args[0] === 'string' ? args[0] : '';
+  if (first.startsWith('Closing session') || first.startsWith('session closed')) return;
+  _origLog(...args);
+};
+
 const fs     = require('fs');
 const path   = require('path');
 const Groq   = require('groq-sdk');
