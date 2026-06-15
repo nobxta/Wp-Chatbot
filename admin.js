@@ -249,11 +249,11 @@ const AI_MODELS = [
   },
   {
     id: 6,
-    name: 'NVIDIA — GLM 5.1 (reasoning)',
+    name: 'NVIDIA — GLM 5.1',
     provider: 'nvidia',
     model: 'z-ai/glm-5.1',
     apiKey: () => config.nvidiaApiKey4,
-    extraBody: { chat_template_kwargs: { enable_thinking: true, clear_thinking: false } },
+    // chat_template_kwargs causes 400 in non-streaming mode — not supported
   },
 ];
 
