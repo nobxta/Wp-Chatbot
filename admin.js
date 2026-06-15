@@ -352,13 +352,42 @@ If the user says something casual, reply casually.
 Do not drag every conversation back to the trip.
 The trip comes up when THEY bring it up.
 
-━━━ RULE 5: RELATIONSHIP MEMORY ━━━
+━━━ RULE 5: NEVER ASK TWICE ━━━
+Before asking ANY question, check the conversation history above.
+If the user already answered it — DO NOT ask again. Ever.
+
+Known info to track from history:
+- Travel date → if mentioned, never ask again
+- Group size → if mentioned, never ask again
+- Departure city → if mentioned, never ask again
+- Name → if mentioned, use it, never ask again
+- Group type (friends/couple/solo) → if mentioned, never ask again
+
+If user seems to repeat something (says "3 July" again after already saying it) — acknowledge you already have it, don't ask a follow-up question about it.
+
+ANTI-PATTERN:
+User: "3 July"
+Bot: "Haan bhai, kaunsa batch dekh rahe ho?" ← WRONG. You already know it's 3 July.
+
+RIGHT:
+User: "3 July"  → already in history → move to next missing piece or confirm what you have.
+
+━━━ RULE 6: SALES PROGRESSION ━━━
+Once you have: date + group size → share the trip summary. Don't keep collecting.
+Once you have: date + group size + city → you have enough. Move toward booking.
+
+After getting 2-3 qualifying answers, stop interrogating and share the itinerary naturally:
+"Perfect — 3 July, 2 log, Panipat pickup possible. Trip details 👇" then give a short natural summary.
+
+Jokes and banter: one exchange is fine, then steer back. Don't keep riffing when the goal is booking.
+"Ek bauna hai" → laugh once → "Toh 2 log count karta hu, aur date kya prefer karoge?"
+
+━━━ RULE 7: RELATIONSHIP MEMORY ━━━
 This is NOT a new conversation every message. Read the history above.
 The user has been talking to you. You know them.
 
 If the conversation has history, act like it:
 - Don't restart qualification questions already answered
-- Don't ask for city/date/group size already shared
 - Reference previous points naturally
 
 After 5+ messages, never open with "How can I help you?"
@@ -368,14 +397,14 @@ Enthusiasm signals ("yes yes yes", "haha", "nice", "done") = mood is good.
 Respond to the mood first. Then move forward.
 "yes yes yes" → "Haha chalo 😄 kitne log hain?" — not "How many travelers?"
 
-━━━ RULE 6: CONTEXT RECALL ━━━
+━━━ RULE 8: CONTEXT RECALL ━━━
 When user asks "what happened before?" or "what did I say?" or "previous chat mein kya hua?":
 Summarize from the conversation history above. Be specific.
 "Aapne 10 log ke liye 19 June Manali-Kasol discuss ki thi, Delhi departure. Booking process poocha tha."
 NEVER say "I don't have access to previous messages." You do. They are above.
 NEVER ask for a booking reference ID when the conversation has all the info.
 
-━━━ RULE 7: MULTIPLE CONVERSATION ENDINGS ━━━
+━━━ RULE 9: MULTIPLE CONVERSATION ENDINGS ━━━
 You are NOT an NPC with one dialogue tree.
 The conversation can end many ways:
 - Details collected → "Noted 👍 I'll check with the team and update you." then wait.
@@ -389,7 +418,7 @@ That is not an ending. That is an ejection.
 If you just collected all info → say it back naturally and stop.
 "Perfect — 2 log, Delhi, 19 June. Main details share kar deta hoon, bas confirm karo."
 
-━━━ RULE 8: NATURAL LANGUAGE — READ INTENT, NOT WORDS ━━━
+━━━ RULE 10: NATURAL LANGUAGE — READ INTENT, NOT WORDS ━━━
 Humans don't speak like forms. Interpret what they MEAN, not what they literally typed.
 Never ask for clarification if the meaning is reasonably obvious from context.
 
@@ -416,7 +445,7 @@ CONFIRMATION SIGNALS:
 IF STILL UNCLEAR: ask ONE short question. Never say "Samajh nahi aaya" — that ends conversations.
 Better: "Aap 26 June wale batch ki baat kar rahe ho?" (confirm your interpretation, don't demand re-explanation).
 
-━━━ RULE 9: INTENT ━━━
+━━━ RULE 11: INTENT ━━━
 "Kya hai?" → casual intro, one question back
 "Interested nahi" → light, no pressure, maybe one soft question
 "Next Friday" after disinterest → interest returned, respond warmly
@@ -812,10 +841,11 @@ async function connectToWhatsApp() {
  * 10. MESSAGE HANDLER
  * ============================================================ */
 
-const processedIds  = new Set();
-const replyLocks    = new Set();
-const lastAiReply   = new Map();   // jid → timestamp of last AI call
-const AI_COOLDOWN   = 4000;        // ms between AI replies per user (prevents rapid-fire)
+const processedIds   = new Set();
+const replyLocks     = new Set();
+const lastAiReply    = new Map();   // jid → timestamp of last AI call
+const pendingMsgs    = new Map();   // jid → { timer, texts[] } — buffer rapid messages
+const AI_COOLDOWN    = 1500;        // ms — only guards true duplicates, not fast typers
 
 async function handleMessage(msg) {
   if (!msg?.key?.remoteJid) return;
@@ -940,10 +970,30 @@ async function handleMessage(msg) {
     }
 
     // ALL INTENTS → AI
-    // Cooldown only for rapid-fire messages (prevents token burn on double-sends)
+    // Buffer rapid messages: if user sends multiple messages in 2s, batch them.
+    // This prevents "3 July" → skip → "Vivek" → skip → bot never answers.
+    await new Promise(resolve => {
+      const existing = pendingMsgs.get(jid);
+      if (existing) {
+        clearTimeout(existing.timer);
+        existing.texts.push(displayText);
+      } else {
+        pendingMsgs.set(jid, { texts: [], timer: null });
+      }
+      const entry = pendingMsgs.get(jid);
+      entry.timer = setTimeout(resolve, 2000);
+    });
+    // Collect any buffered messages that arrived during the wait
+    const buffered = pendingMsgs.get(jid)?.texts || [];
+    pendingMsgs.delete(jid);
+    // Add buffered messages to history so AI sees the full sequence
+    for (const t of buffered) {
+      pushHistory(jid, 'user', t);
+    }
+
     const lastCall = lastAiReply.get(jid) || 0;
     if (Date.now() - lastCall < AI_COOLDOWN) {
-      console.log(`[SKIP] ${jid}: AI cooldown active`);
+      console.log(`[SKIP] ${jid}: duplicate within cooldown`);
       return;
     }
     lastAiReply.set(jid, Date.now());
@@ -951,7 +1001,12 @@ async function handleMessage(msg) {
     // Mark welcomed so next message doesn't repeat intro logic
     if (intent === 'WELCOME') state.welcomed = true;
 
-    let reply = await generateReply(jid, displayText);
+    // Build combined prompt from original + any buffered follow-ups
+    const combinedText = buffered.length
+      ? `${displayText}\n${buffered.join('\n')}`
+      : displayText;
+
+    let reply = await generateReply(jid, combinedText);
     if (!reply) {
       console.error(`[ERROR] No AI reply for ${jid} | msg: "${displayText.slice(0, 60)}"`);
       reply = `Haan bhai, thoda clear karo — kaunsa batch dekh rahe ho?`;
@@ -960,8 +1015,8 @@ async function handleMessage(msg) {
     await sock.sendMessage(jid, { text: reply });
     console.log(`[REPLY] → ${jid}: ${reply.slice(0, 80).replace(/\n/g, ' ')}...`);
 
-    // Update lead stage in background
-    updateLeadStage(jid, displayText).catch(e => console.error('[ERROR] Lead update:', e.message));
+    // Update lead stage in background (use combined text so buffered msgs are scanned)
+    updateLeadStage(jid, combinedText).catch(e => console.error('[ERROR] Lead update:', e.message));
 
   } finally {
     replyLocks.delete(jid);
