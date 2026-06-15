@@ -59,6 +59,7 @@ if (!config.groqApiKey || config.groqApiKey.startsWith('PASTE_')) {
 const adminNumbers = Array.isArray(config.adminNumbers)
   ? config.adminNumbers
   : [config.adminNumber];
+// Mutable — LIDs are added after connection via resolveAdminLids()
 const ADMIN_JIDS    = adminNumbers.map(n => `${String(n).replace(/\D/g, '')}@s.whatsapp.net`);
 const AUTO_REPLY_MS = (config.autoReplyAfterMinutes || 30) * 60 * 1000;
 const HISTORY_LIMIT = config.historyMessages || 8;
@@ -532,6 +533,17 @@ async function connectToWhatsApp() {
     if (connection === 'open') {
       connected = true;
       console.log('\n✅ Connected Successfully\n');
+      // Resolve admin phone numbers to LIDs (newer WhatsApp uses @lid JIDs)
+      for (const num of adminNumbers) {
+        try {
+          const results = await sock.onWhatsApp(num);
+          if (!results?.length) continue;
+          const { jid, lid } = results[0];
+          if (jid && !ADMIN_JIDS.includes(jid)) ADMIN_JIDS.push(jid);
+          if (lid && !ADMIN_JIDS.includes(lid)) ADMIN_JIDS.push(lid);
+        } catch (e) { /* non-fatal */ }
+      }
+      console.log('[INFO] Admin JIDs:', ADMIN_JIDS);
     }
     if (connection === 'close') {
       connected = false;
