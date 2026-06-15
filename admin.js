@@ -362,6 +362,11 @@ USE occasionally: "Acha" / "Sahi hai" / "Nice" / "Badiya"
 
 ONE QUESTION PER MESSAGE. Always.
 
+━━━ NAME COLLECTION ━━━
+Before or during booking intent, ask name naturally — once, not every message.
+"Naam kya hai aapka?" or "By the way, naam bata do" — casual, not formal.
+Once collected, use it. Don't ask again.
+
 ━━━ HARD RULES ━━━
 Never say "booking confirmed / seat booked / payment received."
 Never share a payment link.
@@ -428,8 +433,10 @@ async function notifyAdmins(message) {
 }
 
 function buildLeadCard(jid, lead, state) {
-  const phone    = jid.replace('@s.whatsapp.net','').replace('@lid','');
-  const name     = lead.booking?.name || 'Not collected';
+  const rawId    = jid.replace('@s.whatsapp.net','').replace('@lid','');
+  const isLid    = jid.endsWith('@lid');
+  const phone    = isLid ? `${rawId} (WhatsApp LID — tap contact to call)` : `+${rawId}`;
+  const name     = lead.name || lead.booking?.name || 'Not collected';
   const trip     = lead.destination   || 'Manali + Kasol';
   const city     = lead.departureCity || 'Not confirmed';
   const pax      = lead.travellers    || 'Unknown';
@@ -462,7 +469,8 @@ function buildLeadCard(jid, lead, state) {
 }
 
 function buildFollowUpAlert(jid, lead, message) {
-  const phone      = jid.replace('@s.whatsapp.net','').replace('@lid','');
+  const rawId      = jid.replace('@s.whatsapp.net','').replace('@lid','');
+  const phone      = jid.endsWith('@lid') ? `${rawId} (LID)` : `+${rawId}`;
   const name       = lead.booking?.name || 'Not collected';
   const trip       = lead.destination   || 'Manali + Kasol';
   const pax        = lead.travellers    || 'Unknown';
@@ -511,13 +519,28 @@ async function handleBookingFlow(jid, text) {
   return false;
 }
 
-// Call this when user sends a message after handoff — sends rich follow-up alert (once per 5 min)
-async function notifyFollowUp(jid, lead, message) {
-  // Skip pure acks — admin doesn't need to know about "ok" / "thanks"
-  if (ACK_REGEX.test(message.trim())) return;
+// Signals that actually matter to the sales team
+const FOLLOWUP_TRIGGERS = [
+  /\b(book|booking|payment|pay|confirm|seat|advance|how.*(do|to).*book|kaise.*book|kitna.*dena|details share)\b/i,
+  /\b(call|callback|phone|number|contact me|reach me|mujhe call)\b/i,
+  /\b(\d{10})\b/,           // phone number shared
+  /\b(change|different|other|alag|badal).*(date|batch|trip|city)/i,
+];
 
+async function notifyFollowUp(jid, lead, message) {
+  const t = message.trim();
+  // Skip acks, greetings, and noise
+  if (ACK_REGEX.test(t))   return;
+  if (GREET_REGEX.test(t)) return;
+  if (t.length < 5)        return;
+
+  // Only fire if message contains something actionable for the sales team
+  const isActionable = FOLLOWUP_TRIGGERS.some(r => r.test(t));
+  if (!isActionable) return;
+
+  // 10-min cooldown so same Q doesn't spam
   const last = lead.lastFollowUpTs || 0;
-  if (Date.now() - last < 5 * 60 * 1000) return; // 5-min cooldown
+  if (Date.now() - last < 10 * 60 * 1000) return;
 
   lead.lastFollowUpTs = Date.now();
   saveMemory();
@@ -963,20 +986,21 @@ async function updateLeadStage(jid, latestMsg) {
   const state = getChatState(jid);
   const lead  = state.lead;
 
-  // Don't overwrite booking stages
   if (['booking_started','payment_pending','confirmed'].includes(lead.stage)) return;
 
-  const convo = state.history.slice(-8)
+  const convo = state.history.slice(-10)
     .map(m => `${m.role === 'user' ? 'Customer' : 'Agent'}: ${m.text}`)
     .join('\n');
 
   const result = await callAI([
     {
       role: 'system',
-      content: 'Extract from this WhatsApp conversation (respond ONLY with raw JSON, no markdown):\n' +
-        '{"destination":string|null,"travellers":string|null,"departureCity":string|null,' +
-        '"stage":"new"|"interested"|"price_shared"|"itinerary_sent"|"hot_lead"|"booking_intent"}\n' +
-        'Stage: hot_lead=asked about price or booking, booking_intent=said they want to book. Use null if not clear.',
+      content: 'Extract from this WhatsApp conversation. Respond ONLY with raw JSON, no markdown:\n' +
+        '{"name":string|null,"destination":string|null,"travellers":string|null,' +
+        '"departureCity":string|null,"groupType":string|null,' +
+        '"stage":"new"|"interested"|"price_shared"|"hot_lead"|"booking_intent"}\n' +
+        'name: customer first name if mentioned. travellers: number as string. ' +
+        'stage hot_lead=asked price/dates, booking_intent=said want to book/how to book. null if unclear.',
     },
     { role: 'user', content: convo },
   ]);
@@ -984,18 +1008,46 @@ async function updateLeadStage(jid, latestMsg) {
   if (!result) return;
   try {
     const data = JSON.parse(result.replace(/```json|```/g, '').trim());
-    if (data.destination)   lead.destination   = String(data.destination);
-    if (data.travellers)    lead.travellers    = String(data.travellers);
-    if (data.departureCity) lead.departureCity = String(data.departureCity);
+
+    // Snapshot key fields before update (for change-detection)
+    const prevTravellers = lead.travellers;
+    const prevCity       = lead.departureCity;
+    const prevDest       = lead.destination;
+
+    if (data.name && !lead.name)              lead.name          = String(data.name);
+    if (data.destination)                     lead.destination   = String(data.destination);
+    if (data.travellers)                      lead.travellers    = String(data.travellers);
+    if (data.departureCity)                   lead.departureCity = String(data.departureCity);
+    if (data.groupType)                       lead.groupType     = String(data.groupType);
     if (data.stage && !['booking_started','payment_pending','confirmed'].includes(lead.stage))
       lead.stage = data.stage;
-    lead.qualified = Boolean(lead.destination && lead.departureCity);
-
-    if (data.stage === 'hot_lead' || data.stage === 'booking_intent') {
-      console.log(`[LEAD] 🔥 Hot: ${jid}`, JSON.stringify(lead));
-      await notifyAdmins(buildHotLeadAlert(jid, lead));
-    }
+    lead.qualified = Boolean(lead.destination || lead.travellers);
     saveMemory();
+
+    // HOT LEAD — fire once only (adminNotified flag is the lock)
+    if ((data.stage === 'hot_lead' || data.stage === 'booking_intent') && !lead.adminNotified) {
+      lead.adminNotified = true;
+      lead.handoffTs     = Date.now();
+      saveMemory();
+      await notifyAdmins(buildLeadCard(jid, lead, state));
+      console.log(`[HOT LEAD] 🔥 ${jid}`);
+      return;
+    }
+
+    // KEY FIELD UPDATE — notify admin only if travellers/city/destination changed
+    if (lead.adminNotified) {
+      const changed = [];
+      if (data.travellers && data.travellers !== prevTravellers) changed.push(`Travellers: ${prevTravellers || '?'} → ${data.travellers}`);
+      if (data.departureCity && data.departureCity !== prevCity)   changed.push(`City: ${prevCity || '?'} → ${data.departureCity}`);
+      if (data.destination && data.destination !== prevDest)       changed.push(`Trip: ${prevDest || '?'} → ${data.destination}`);
+      if (changed.length) {
+        const phone = jid.replace('@s.whatsapp.net','').replace('@lid','');
+        await notifyAdmins(
+          `📝 *LEAD UPDATE*\n📱 ${phone} | 👤 ${lead.name || 'Unknown'}\n\n` +
+          changed.map(c => `• ${c}`).join('\n') + `\n\n💬 "${latestMsg?.slice(0,100)}"`
+        );
+      }
+    }
   } catch { /* non-JSON, skip */ }
 }
 
