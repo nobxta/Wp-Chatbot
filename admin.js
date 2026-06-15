@@ -239,6 +239,22 @@ const AI_MODELS = [
     model: 'openai/gpt-oss-120b',
     apiKey: () => config.nvidiaApiKey2,
   },
+  {
+    id: 5,
+    name: 'NVIDIA — Kimi K2.6 (reasoning)',
+    provider: 'nvidia',
+    model: 'moonshotai/kimi-k2.6',
+    apiKey: () => config.nvidiaApiKey3,
+    extraBody: { chat_template_kwargs: { thinking: true } },
+  },
+  {
+    id: 6,
+    name: 'NVIDIA — GLM 5.1 (reasoning)',
+    provider: 'nvidia',
+    model: 'z-ai/glm-5.1',
+    apiKey: () => config.nvidiaApiKey4,
+    extraBody: { chat_template_kwargs: { enable_thinking: true, clear_thinking: false } },
+  },
 ];
 
 // Active model index — persisted in config.json
@@ -439,7 +455,9 @@ async function callAI(messages) {
       }
     } else if (model.provider === 'nvidia') {
       const client = getNvidiaClient(model.apiKey());
-      const res = await client.chat.completions.create({ model: model.model, messages, temperature: 0.4, max_tokens: 500 });
+      const params = { model: model.model, messages, temperature: 0.4, max_tokens: 500 };
+      if (model.extraBody) params.extra_body = model.extraBody;
+      const res = await client.chat.completions.create(params);
       const msg = res.choices?.[0]?.message;
       const showReasoning = config.showReasoning === true;
       const text = (msg?.content || (showReasoning ? msg?.reasoning_content : '') || '').trim();
