@@ -265,6 +265,25 @@ function buildSystemPrompt(lead) {
   return `You are a travel guy at Ghumakkars chatting on WhatsApp with a traveler.
 Not a bot. Not customer support. Not a brochure. A real person.
 
+━━━ MESSAGE PRIORITY — NEVER SKIP STEP 1 ━━━
+Step 1: Reply to what the user actually said.
+Step 2: Continue the conversation naturally.
+Step 3: Only then collect missing info, if needed.
+
+Examples of Step 1 done right:
+"Hello sir" → "Hello 👋" — not "Team will contact you."
+"How do I book?" → explain the booking process simply — not "Call this number."
+"Nice" → "Glad you like it 😄" — not "Team will contact you."
+"10 log" → "10 log ka group, mast rahega 😄 Delhi se hi aayenge?" — not "Pickup city?"
+"What to do now?" → walk them through next steps naturally.
+
+━━━ HOW DO I BOOK — ANSWER THIS PROPERLY ━━━
+When user asks "how to book" or "next step" or "kya karna hai":
+Explain the process simply:
+"Easy — once you're ready, I'll get your seat blocked. After that you'll get payment details and confirmation. Are all [X] people confirmed or still deciding?"
+Never say "call this number" as the only response.
+Never say "team will contact" as the only response.
+
 ━━━ INTENT FIRST ━━━
 Read what they actually mean, not just the words.
 "Kya hai?" → casual intro, one question back
@@ -411,50 +430,27 @@ function buildHotLeadAlert(jid, lead) {
 async function handleBookingFlow(jid, text) {
   const state = getChatState(jid);
   const lead  = state.lead;
-
-  // Already handed off — any follow-up message from user also goes to admin
-  if (lead.stage === 'human_handoff') {
-    const phone = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
-    await notifyAdmins(
-      `💬 *Follow-up from Handoff Lead*\n` +
-      `📱 ${phone}\n` +
-      `Message: "${text.slice(0, 200)}"`
-    );
-    // Only reply once every 10 mins to avoid spam
-    const lastReply = lead.lastHandoffReplyTs || 0;
-    if (Date.now() - lastReply > 10 * 60 * 1000) {
-      lead.lastHandoffReplyTs = Date.now();
-      saveMemory();
-      await sock.sendMessage(jid, {
-        text: `Team member aapko shortly connect karenge 😊\nFor urgent queries: 📞 ${TEAM_NUMBERS}`,
-      });
-    }
-    return true;
-  }
-
-  // First time booking intent detected
-  lead.stage    = 'human_handoff';
-  lead.qualified = true;
-  saveMemory();
-
   const phone = jid.replace('@s.whatsapp.net', '').replace('@lid', '');
 
-  await sock.sendMessage(jid, {
-    text: `Great 😊 Booking aur payment process hamari team handle karti hai.\n\nMain aapki request admin tak forward kar raha hoon — team aapse shortly connect karegi.\n\nYa directly contact karein: 📞 ${TEAM_NUMBERS}`,
-  });
+  if (!lead.adminNotified) {
+    // First booking signal — notify admin silently in background, keep chatting normally
+    lead.adminNotified = true;
+    lead.stage         = 'booking_intent';
+    lead.qualified     = true;
+    saveMemory();
+    await notifyAdmins(
+      `🔥 *HOT LEAD — BOOKING INTENT*\n\n` +
+      `📱 WhatsApp: ${phone}\n` +
+      `🏔️ Trip: Manali + Kasol\n` +
+      `🚌 City: ${lead.departureCity || 'Not confirmed'}\n` +
+      `👥 Travellers: ${lead.travellers || 'Unknown'}\n\n` +
+      `⚡ User wants to book. Contact NOW!`
+    );
+    console.log(`[HOT LEAD] 🔥 ${jid} — booking intent, admin notified`);
+  }
 
-  await notifyAdmins(
-    `🔥 *HOT LEAD — BOOKING INTENT*\n\n` +
-    `📱 WhatsApp: ${phone}\n` +
-    `🏔️ Trip: Manali + Kasol | 19 Jun\n` +
-    `🚌 City: ${lead.departureCity || 'Not confirmed'}\n` +
-    `👥 Travellers: ${lead.travellers || 'Unknown'}\n` +
-    `📊 Stage: human_handoff\n\n` +
-    `⚡ User wants to BOOK. Contact NOW!`
-  );
-
-  console.log(`[HANDOFF] 🤝 ${jid} handed off to admin`);
-  return true;
+  // Let AI answer naturally — it knows from prompt not to confirm payment/booking
+  return false;
 }
 
 /* ============================================================
@@ -815,25 +811,8 @@ async function handleMessage(msg) {
       if (handled) return;
     }
 
-    // 6. HUMAN_HANDOFF — still in handoff state
-    if (lead.stage === 'human_handoff') {
-      // Pure acks ("ok", "thanks", "👍") → swallow silently, no loop
-      if (intent === 'ACK') return;
-
-      const tripQ = PRICE_REGEX.test(displayText) || ITIN_REGEX.test(displayText) || CANCEL_REGEX.test(displayText);
-      if (!tripQ) {
-        // Real follow-up message — notify admin once per 10 min
-        const phone = jid.replace('@s.whatsapp.net','').replace('@lid','');
-        await notifyAdmins(`💬 *Handoff follow-up*\n📱 ${phone}\n"${displayText.slice(0,200)}"`);
-        const last = lead.lastHandoffReplyTs || 0;
-        if (Date.now() - last > 10 * 60 * 1000) {
-          lead.lastHandoffReplyTs = Date.now();
-          saveMemory();
-          await sock.sendMessage(jid, { text: `Team shortly connect karegi. Direct: 📞 ${TEAM_NUMBERS}` });
-        }
-        return;
-      }
-    }
+    // 6. booking_intent stage — admin already notified, conversation continues normally
+    // No wall, no lock. Bot keeps chatting. Admin reaches out in parallel.
 
     // 7. PRICE — instant answer, no AI needed
     if (intent === 'PRICE') {
