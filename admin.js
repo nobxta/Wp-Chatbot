@@ -813,8 +813,15 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 2. GREET — state reset, fresh start, no old context
+    // 2. GREET — only reset if truly fresh (no history). Mid-convo greeting = casual reply.
     if (intent === 'GREET') {
+      if (state.history.length > 0) {
+        // Already chatting — don't wipe context, just respond casually via AI
+        const reply = await generateReply(jid, displayText) || `Haan bhai 😄 batao`;
+        pushHistory(jid, 'assistant', reply);
+        await sock.sendMessage(jid, { text: reply });
+        return;
+      }
       softReset(state);
       const reply = `Hey 👋 bolo kya plan hai?`;
       pushHistory(jid, 'assistant', reply);
@@ -928,7 +935,7 @@ async function handleMessage(msg) {
       const reply =
         `Full itinerary here 👇\n${TRIP_LINK}\n\n` +
         `*Quick Overview:*\n` +
-        `Day 1 – Depart Delhi/Mathura (overnight bus)\n` +
+        `Day 1 – Depart Delhi Akshardham (overnight bus)\n` +
         `Day 2 – Manali: Hadimba Temple, Mall Road\n` +
         `Day 3 – Solang Valley, Atal Tunnel, Koksar\n` +
         `Day 4 – Kullu sightseeing → transfer to Kasol\n` +
@@ -988,21 +995,23 @@ async function updateLeadStage(jid, latestMsg) {
 
   if (['booking_started','payment_pending','confirmed'].includes(lead.stage)) return;
 
-  const convo = state.history.slice(-10)
-    .map(m => `${m.role === 'user' ? 'Customer' : 'Agent'}: ${m.text}`)
-    .join('\n');
-
   const result = await callAI([
     {
       role: 'system',
-      content: 'Extract from this WhatsApp conversation. Respond ONLY with raw JSON, no markdown:\n' +
-        '{"name":string|null,"destination":string|null,"travellers":string|null,' +
-        '"departureCity":string|null,"groupType":string|null,' +
-        '"stage":"new"|"interested"|"price_shared"|"hot_lead"|"booking_intent"}\n' +
-        'name: customer first name if mentioned. travellers: number as string. ' +
-        'stage hot_lead=asked price/dates, booking_intent=said want to book/how to book. null if unclear.',
+      content:
+        'You are a CRM field extractor. Respond ONLY with raw JSON, no markdown, no explanation.\n' +
+        'Schema: {"name":string|null,"destination":string|null,"travellers":string|null,"departureCity":string|null,"groupType":string|null,"stage":"new"|"interested"|"price_shared"|"hot_lead"|"booking_intent"|null}\n\n' +
+        'STRICT RULES:\n' +
+        '1. Extract ONLY from the single customer message provided. Do NOT infer from context.\n' +
+        '2. A field must be null unless the customer EXPLICITLY states it in this exact message.\n' +
+        '3. Complaints, greetings, abuse, prices, random questions → all fields null except possibly stage.\n' +
+        '4. travellers: only if customer states a count of people ("hum 4 log", "2 friends"). null otherwise.\n' +
+        '5. departureCity: only if customer explicitly names their departure city. null otherwise.\n' +
+        '6. destination: only if customer asks about or mentions a trip destination. null otherwise.\n' +
+        '7. stage: hot_lead ONLY if customer asks price/availability. booking_intent ONLY if customer says they want to book. null for everything else.\n' +
+        '8. name: only if customer introduces themselves by name in this exact message.',
     },
-    { role: 'user', content: convo },
+    { role: 'user', content: `Customer message: "${latestMsg}"` },
   ]);
 
   if (!result) return;
