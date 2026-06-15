@@ -7,7 +7,12 @@
 
 'use strict';
 
-// Suppress Baileys internal console.log output (e.g. "Closing session: SessionEntry {...}")
+// Suppress Baileys "Closing session" spam — it writes via process.stdout.write directly
+const _origStdoutWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = (chunk, ...rest) => {
+  if (typeof chunk === 'string' && chunk.includes('Closing session')) return true;
+  return _origStdoutWrite(chunk, ...rest);
+};
 const _origLog = console.log.bind(console);
 console.log = (...args) => {
   const first = typeof args[0] === 'string' ? args[0] : '';
@@ -59,8 +64,14 @@ if (!config.groqApiKey || config.groqApiKey.startsWith('PASTE_')) {
 const adminNumbers = Array.isArray(config.adminNumbers)
   ? config.adminNumbers
   : [config.adminNumber];
-// Mutable — LIDs are added after connection via resolveAdminLids()
-const ADMIN_JIDS    = adminNumbers.map(n => `${String(n).replace(/\D/g, '')}@s.whatsapp.net`);
+// Mutable — LIDs appended after connection or from config.adminLids
+const ADMIN_JIDS = adminNumbers.map(n => `${String(n).replace(/\D/g, '')}@s.whatsapp.net`);
+// Support manually configured LIDs in config: "adminLids": ["241875445375097"]
+const adminLids = Array.isArray(config.adminLids) ? config.adminLids : [];
+for (const lid of adminLids) {
+  const lidJid = `${lid}@lid`;
+  if (!ADMIN_JIDS.includes(lidJid)) ADMIN_JIDS.push(lidJid);
+}
 const AUTO_REPLY_MS = (config.autoReplyAfterMinutes || 30) * 60 * 1000;
 const HISTORY_LIMIT = config.historyMessages || 8;
 
@@ -613,6 +624,14 @@ async function handleMessage(msg) {
   if (isAdmin && text.startsWith('/')) {
     const handled = await handleAdminCommand(jid, text);
     if (handled) return;
+  }
+
+  // Auto-detect unknown @lid senders trying to use commands — help admin find their LID
+  if (!isAdmin && jid.endsWith('@lid') && text.startsWith('/')) {
+    const lid = jid.replace('@lid', '');
+    console.log(`[ADMIN LID DETECTED] Someone sent a command from @lid: ${lid}`);
+    console.log(`[ADMIN LID DETECTED] Add to config.json: "adminLids": ["${lid}"]`);
+    return;
   }
 
   // Track outgoing (bot/admin) messages — after command check
