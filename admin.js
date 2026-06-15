@@ -168,19 +168,30 @@ const ITIN_REGEX    = /\b(itinerary|schedule|plan|details|day|programme|batao|ba
 const CANCEL_REGEX  = /\b(cancel|refund|return|wapas|nahi aana|drop|policy|cancellation)\b/i;
 const DEST_REGEX    = /\b(manali|kasol|goa|kashmir|kedarnath|shimla|leh|ladakh|spiti|rishikesh|mussoorie|nainital|dharamshala|mcleodganj)\b/i;
 const ABUSE_WORDS   = ['aukat','gali','bc ','mc ','chutiya','bhen','madarch','harami','bkl','bsdk','randi','gaand','bhench','teri maa'];
-const BYE_REGEX     = /^(bye|goodbye|ok bye|tata|alvida|chal bye|ok thanks|thank you|thanks|no thanks|nahi chahiye|nhi chahiye|nahi\s*ji|nope|not interested|nahi\s*chahiye)\s*[!.]*$/i;
+const BYE_REGEX     = /^(bye|goodbye|ok bye|tata|alvida|chal bye|no thanks|nahi chahiye|nhi chahiye|nahi\s*ji|nope|not interested|nahi\s*chahiye)\s*[!.]*$/i;
+// Pure acknowledgements — no new info, conversation should move forward or end naturally
+const ACK_REGEX     = /^(ok|okay|k|cool|got it|noted|fine|sure|alright|accha|theek hai|theek|haan|ha|ha ji|ho|hmm|nice|great|perfect|👍|👌|thank you|thanks|thnx|thx|ty|done|understood)\s*[!.]*$/i;
 
 function detectIntent(text) {
   const t = text.toLowerCase().trim();
   if (ABUSE_WORDS.some(w => t.includes(w))) return 'ABUSE';
   if (GREET_REGEX.test(t))  return 'GREET';
   if (BYE_REGEX.test(t))    return 'BYE';
+  if (ACK_REGEX.test(t))    return 'ACK';
   if (BOOK_REGEX.test(t))   return 'BOOK';
   if (PRICE_REGEX.test(t))  return 'PRICE';
   if (ITIN_REGEX.test(t))   return 'ITINERARY';
   if (CANCEL_REGEX.test(t)) return 'CANCEL';
   if (DEST_REGEX.test(t))   return 'DESTINATION';
   return 'GENERAL';
+}
+
+// Extract group size from message (e.g. "25 log", "10 people", "hum 15 hain")
+function extractGroupSize(text) {
+  const m = text.match(/\b(\d+)\s*(log|people|person|persons|friends|members|travellers?|travelers?|hai|hain|h)\b/i)
+           || text.match(/\bhum\s+(\d+)\b/i)
+           || text.match(/\b(\d+)\s+(?:ka\s+)?group\b/i);
+  return m ? parseInt(m[1], 10) : null;
 }
 
 // Resets topic context but keeps lead identity
@@ -303,12 +314,40 @@ Build trust → Understand → Recommend → Close.
 Never rush to send booking links. Never pressure users.
 A helpful consultant converts better than a pushy salesperson.
 
+BEFORE EVERY REPLY — think through these 4 questions:
+1. What did the user just say?
+2. What stage is this lead in? What do I already know about them?
+3. What information have I already shared? (never repeat it)
+4. What is the single most useful next response?
+
+ACKNOWLEDGEMENT HANDLING ("ok", "cool", "noted", "thanks", "haan", "👍"):
+- Do NOT repeat any previous information.
+- Either: move the conversation one step forward, confirm next action, or end naturally.
+- If nothing useful to add — say something warm and brief, or stay silent.
+
+EMOJI & "SIR" RULES:
+- Max 1 emoji every 4-5 messages. Not every reply.
+- Do not say "sir" in every message. Mirror user's tone.
+- If they're casual → be casual. If they're formal → be formal.
+
+GROUP SIZE (10+ people):
+- This is a high-priority lead. Shift immediately to qualifying mode.
+- Ask: "Is this a friends group, college trip, or office outing?"
+- Collect: exact size, preferred dates, departure city, trip type.
+- Never treat a group lead like a solo traveler.
+
+AFTER COLLECTING ALL INFO:
+- Stop asking questions.
+- Give a brief summary of what you noted.
+- Confirm the next action (team will follow up).
+- Then stop. Do not start new questions.
+
 HARD RULES (never break):
 - Never say "booking confirmed", "seat booked", "payment received".
 - Never share or generate a payment link.
-- Never assume pickup city, group size, or payment status unless user explicitly said so.
+- Never assume pickup city, group size, or payment unless user explicitly said so.
 - If unsure about any fact → "Let me check with the team and confirm."
-- For booking requests → inform team will connect shortly.
+- For booking → inform team will connect shortly.
 
 Customer info: ${JSON.stringify(lead)}
 
@@ -715,15 +754,46 @@ async function handleMessage(msg) {
     // 3. BYE / NOT INTERESTED — graceful exit, leave door open
     if (intent === 'BYE') {
       const reply = await generateReply(jid, displayText) ||
-        `No worries at all 😊 Whenever you plan a trip, we're here for you. Take care!`;
+        `No worries at all. Whenever you plan a trip, we're here. Take care!`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       return;
     }
 
-    // 4. ABUSE — ignore insult, stay helpful
+    // 4. ACK ("ok", "cool", "thanks") — don't repeat info, let AI move forward or wrap up
+    if (intent === 'ACK') {
+      const reply = await generateReply(jid, displayText);
+      if (reply) {
+        pushHistory(jid, 'assistant', reply);
+        await sock.sendMessage(jid, { text: reply });
+      }
+      // If AI has nothing to add, stay silent — conversation is done
+      return;
+    }
+
+    // 5. ABUSE — ignore insult, stay helpful
     if (intent === 'ABUSE') {
-      const reply = `Koi trip sawaal ho toh bataiye 😊`;
+      const reply = `Koi trip sawaal ho toh bataiye`;
+      pushHistory(jid, 'assistant', reply);
+      await sock.sendMessage(jid, { text: reply });
+      return;
+    }
+
+    // 5b. GROUP SIZE DETECTION — high-priority lead
+    const groupSize = extractGroupSize(displayText);
+    if (groupSize && groupSize >= 10 && !lead.groupEscalated) {
+      lead.travellers    = groupSize;
+      lead.groupEscalated = true;
+      lead.stage         = 'hot_lead';
+      saveMemory();
+      await notifyAdmins(
+        `🔥 *GROUP LEAD — ${groupSize} TRAVELLERS*\n\n` +
+        `📱 ${jid.replace('@s.whatsapp.net','').replace('@lid','')}\n` +
+        `👥 Group size: ${groupSize}\n` +
+        `📊 Needs immediate follow-up!`
+      );
+      const reply = await generateReply(jid, displayText) ||
+        `Wow, ${groupSize} log — that's a solid group! For groups this size we can discuss special arrangements. Can I know if this is a friends group, college trip, or office outing?`;
       pushHistory(jid, 'assistant', reply);
       await sock.sendMessage(jid, { text: reply });
       return;
@@ -764,18 +834,21 @@ async function handleMessage(msg) {
       if (handled) return;
     }
 
-    // 6. HUMAN_HANDOFF — still in handoff state, allow trip Qs only
+    // 6. HUMAN_HANDOFF — still in handoff state
     if (lead.stage === 'human_handoff') {
-      // If it's a trip question, answer it — otherwise redirect
+      // Pure acks ("ok", "thanks", "👍") → swallow silently, no loop
+      if (intent === 'ACK') return;
+
       const tripQ = PRICE_REGEX.test(displayText) || ITIN_REGEX.test(displayText) || CANCEL_REGEX.test(displayText);
       if (!tripQ) {
+        // Real follow-up message — notify admin once per 10 min
         const phone = jid.replace('@s.whatsapp.net','').replace('@lid','');
         await notifyAdmins(`💬 *Handoff follow-up*\n📱 ${phone}\n"${displayText.slice(0,200)}"`);
         const last = lead.lastHandoffReplyTs || 0;
         if (Date.now() - last > 10 * 60 * 1000) {
           lead.lastHandoffReplyTs = Date.now();
           saveMemory();
-          await sock.sendMessage(jid, { text: `Team aapko shortly connect karegi 😊\nDirect: 📞 ${TEAM_NUMBERS}` });
+          await sock.sendMessage(jid, { text: `Team shortly connect karegi. Direct: 📞 ${TEAM_NUMBERS}` });
         }
         return;
       }
