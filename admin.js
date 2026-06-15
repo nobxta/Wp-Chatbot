@@ -864,53 +864,7 @@ async function handleMessage(msg) {
 
     const intent = isFirstMsg ? 'WELCOME' : detectIntent(displayText);
 
-    // 1. WELCOME (first ever message) — soft intro, one question, no info dump
-    if (intent === 'WELCOME') {
-      state.welcomed = true;
-      const reply = await generateReply(jid, displayText) ||
-        `Heyy 👋 Ghumakkars travel community hai — hum group trips organize karte hain.\nTravel pasand hai ya bas explore kar rahe the? 😄`;
-      pushHistory(jid, 'assistant', reply);
-      await sock.sendMessage(jid, { text: reply });
-      return;
-    }
-
-    // 2. GREET — only reset if truly fresh (no history). Mid-convo greeting = casual reply.
-    if (intent === 'GREET') {
-      if (state.history.length > 0) {
-        // Already chatting — don't wipe context, just respond casually via AI
-        const reply = await generateReply(jid, displayText) || `Haan bhai 😄 batao`;
-        pushHistory(jid, 'assistant', reply);
-        await sock.sendMessage(jid, { text: reply });
-        return;
-      }
-      softReset(state);
-      const reply = `Hey 👋 bolo kya plan hai?`;
-      pushHistory(jid, 'assistant', reply);
-      await sock.sendMessage(jid, { text: reply });
-      return;
-    }
-
-    // 3. BYE / NOT INTERESTED — graceful exit, leave door open
-    if (intent === 'BYE') {
-      const reply = await generateReply(jid, displayText) ||
-        `No worries at all. Whenever you plan a trip, we're here. Take care!`;
-      pushHistory(jid, 'assistant', reply);
-      await sock.sendMessage(jid, { text: reply });
-      return;
-    }
-
-    // 4. ACK ("ok", "cool", "thanks") — don't repeat info, let AI move forward or wrap up
-    if (intent === 'ACK') {
-      const reply = await generateReply(jid, displayText);
-      if (reply) {
-        pushHistory(jid, 'assistant', reply);
-        await sock.sendMessage(jid, { text: reply });
-      }
-      // If AI has nothing to add, stay silent — conversation is done
-      return;
-    }
-
-    // 5. ABUSE — ignore insult, stay helpful
+    // ABUSE — short deflect, no AI token wasted
     if (intent === 'ABUSE') {
       const reply = `Koi trip sawaal ho toh bataiye`;
       pushHistory(jid, 'assistant', reply);
@@ -918,110 +872,38 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 5b. GROUP SIZE DETECTION — high-priority lead
+    // GROUP SIZE ≥ 8 — silently notify admin, then let AI reply naturally
     const groupSize = extractGroupSize(displayText);
     if (groupSize && groupSize >= 8 && !lead.groupEscalated) {
-      lead.travellers    = groupSize;
+      lead.travellers     = groupSize;
       lead.groupEscalated = true;
-      lead.stage         = 'hot_lead';
+      lead.stage          = 'hot_lead';
       saveMemory();
       await notifyAdmins(
         `🔥 *GROUP LEAD — ${groupSize} TRAVELLERS*\n\n` +
         `📱 ${jid.replace('@s.whatsapp.net','').replace('@lid','')}\n` +
-        `👥 Group size: ${groupSize}\n` +
-        `📊 Needs immediate follow-up!`
+        `👥 Group size: ${groupSize}`
       );
-      const reply = await generateReply(jid, displayText) ||
-        `Wow, ${groupSize} log — that's a solid group! For groups this size we can discuss special arrangements. Can I know if this is a friends group, college trip, or office outing?`;
-      pushHistory(jid, 'assistant', reply);
-      await sock.sendMessage(jid, { text: reply });
-      return;
     }
 
-    // 4. DESTINATION — only send canned intro if this is first trip mention, else let AI handle contextually
-    if (intent === 'DESTINATION') {
-      const dest = displayText.match(DEST_REGEX)?.[0] || 'Manali';
-      const isOurTrip = /manali|kasol/i.test(dest);
-      const alreadyDiscussed = state.history.length > 2;
-      if (isOurTrip && !alreadyDiscussed) {
-        // First mention — give quick intro, then let AI continue
-        const reply =
-          `Great choice! Manali + Kasol trip chal rahi hai 😊\n` +
-          `📅 19 Jun – 24 Jun | 💰 ₹6,499/person\n\n` +
-          `Details: ${TRIP_LINK}\n\nKoi sawaal ho toh poochho!`;
-        lead.destination = 'Manali + Kasol';
-        saveMemory();
-        pushHistory(jid, 'assistant', reply);
-        await sock.sendMessage(jid, { text: reply });
-        return;
-      } else if (!isOurTrip && !alreadyDiscussed) {
-        const reply =
-          `${dest} ke liye abhi batch nahi hai.\n` +
-          `Hamare paas Manali + Kasol trip hai — 19 Jun, ₹6,499/person.\n` +
-          `Interested ho toh bataiye 😊`;
-        saveMemory();
-        pushHistory(jid, 'assistant', reply);
-        await sock.sendMessage(jid, { text: reply });
-        return;
-      }
-      // Already in conversation — fall through to AI for contextual reply
-    }
-
-    // 5. BOOKING — notify admin once, bot keeps chatting normally
+    // BOOKING INTENT — notify admin once in background, AI keeps replying
     if (intent === 'BOOK' || lead.bookingStep) {
-      await handleBookingFlow(jid, displayText); // always returns false now
+      await handleBookingFlow(jid, displayText);
     }
 
-    // 6. Already a booking lead — send rich follow-up alert to admin (5-min cooldown, no acks)
+    // BOOKING LEAD — rich follow-up alert to admin (10-min cooldown, only actionable msgs)
     if (lead.adminNotified) {
       await notifyFollowUp(jid, lead, displayText);
     }
 
-    // 7. PRICE — instant answer, no AI needed
-    if (intent === 'PRICE') {
-      const reply =
-        `*Manali + Kasol | 19 Jun – 24 Jun*\n\n` +
-        `💰 ₹6,499/person (was ₹10,000)\n` +
-        `🔒 Booking amount: ₹1,500 to lock seat\n\n` +
-        `Full details 👉 ${TRIP_LINK}`;
-      pushHistory(jid, 'assistant', reply);
-      await sock.sendMessage(jid, { text: reply });
-      lead.stage = 'price_shared';
-      saveMemory();
-      return;
+    // FRESH GREET with no history — light reset so AI doesn't carry stale state
+    if (intent === 'GREET' && state.history.length <= 1) {
+      softReset(state);
+      pushHistory(jid, 'user', displayText); // re-add after reset
     }
 
-    // 8. ITINERARY — link + 6-line summary
-    if (intent === 'ITINERARY') {
-      const reply =
-        `Full itinerary here 👇\n${TRIP_LINK}\n\n` +
-        `*Quick Overview:*\n` +
-        `Day 1 – Depart Delhi Akshardham (overnight bus)\n` +
-        `Day 2 – Manali: Hadimba Temple, Mall Road\n` +
-        `Day 3 – Solang Valley, Atal Tunnel, Koksar\n` +
-        `Day 4 – Kullu sightseeing → transfer to Kasol\n` +
-        `Day 5 – Kasol: cafés, riverside, return journey\n` +
-        `Day 6 – Arrive home\n\n` +
-        `Koi specific question?`;
-      pushHistory(jid, 'assistant', reply);
-      await sock.sendMessage(jid, { text: reply });
-      lead.stage = 'itinerary_sent';
-      saveMemory();
-      return;
-    }
-
-    // 9. CANCELLATION
-    if (intent === 'CANCEL') {
-      const reply =
-        `Cancellation policy 👇\n${CANCEL_LINK}\n\n` +
-        `For specific cases: 📞 ${TEAM_NUMBERS}`;
-      pushHistory(jid, 'assistant', reply);
-      await sock.sendMessage(jid, { text: reply });
-      return;
-    }
-
-    // 10. GENERAL — AI with compact knowledge
-    // Per-user cooldown to prevent rapid token burn
+    // ALL INTENTS → AI
+    // Cooldown only for rapid-fire messages (prevents token burn on double-sends)
     const lastCall = lastAiReply.get(jid) || 0;
     if (Date.now() - lastCall < AI_COOLDOWN) {
       console.log(`[SKIP] ${jid}: AI cooldown active`);
@@ -1029,10 +911,12 @@ async function handleMessage(msg) {
     }
     lastAiReply.set(jid, Date.now());
 
+    // Mark welcomed so next message doesn't repeat intro logic
+    if (intent === 'WELCOME') state.welcomed = true;
+
     let reply = await generateReply(jid, displayText);
     if (!reply) {
       console.error(`[ERROR] No AI reply for ${jid} | msg: "${displayText.slice(0, 60)}"`);
-      // Never go silent — confirm interpretation rather than giving up
       reply = `Haan bhai, thoda clear karo — kaunsa batch dekh rahe ho?`;
     }
     pushHistory(jid, 'assistant', reply);
