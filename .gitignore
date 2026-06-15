@@ -3,3 +3,6 @@ node_modules/
 .wwebjs_cache/
 chat_memory.json
 config.json
+package-lock.json
+baileys_store/
+auth_info_baileys/
