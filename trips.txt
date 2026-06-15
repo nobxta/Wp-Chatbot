@@ -1,6 +1,6 @@
 ================ GHUMAKKARS TRIP KNOWLEDGE BASE ================
 
-SCHEDULE: Group trips depart every Friday. Share nearest upcoming Friday batch first, then mention batches run every Friday. Ask which month/weekend they prefer.
+SCHEDULE: Batches are labeled by Friday (the day you arrive/start the trip). Bus departs Delhi on Thursday night and reaches Manali Friday morning. Always call it a "Friday batch" — never say "Thursday night" to the customer unless they ask about the departure time specifically.
 TEAM: 8384826414 | 9456875817
 LINKS: Trip → https://www.ghumakkars.in/trips/manali-kasol-escape | Cancellation → https://www.ghumakkars.in/cancellation-policy | T&C → https://www.ghumakkars.in/terms
 
@@ -9,7 +9,7 @@ LINKS: Trip → https://www.ghumakkars.in/trips/manali-kasol-escape | Cancellati
 PRICE: Rs. 6,499/person (original Rs. 10,000) | Booking amount: Rs. 1,500/person
 PRICING RULES: Price is fixed for individual travelers. Never negotiate individual pricing. Never ask budget for an existing itinerary. For groups 8+, special pricing may sometimes be available.
 
-PICKUP: Delhi Akshardham (Thursday night bus departure, Chandigarh route).
+PICKUP: Delhi Akshardham, Chandigarh route. Bus departs Thursday night (late night) and reaches Manali on Friday morning. To customers, always say "Friday batch" — the bus timing is Thursday night only if they specifically ask when the bus leaves.
 Do NOT mention Mathura pickup.
 Route pickups: If traveler's city falls on the Chandigarh route, a nearby pickup point may be arranged. Never promise until confirmed by team. Say: "If your city is on our route, we can usually arrange pickup from there or a nearby point."
 
@@ -22,7 +22,7 @@ INCLUSIONS: Transportation (Delhi Akshardham–Chandigarh route–return), tripl
 EXCLUSIONS: Lunch, personal expenses, adventure activities (ATV rides, ropeway — optional & extra cost), entry tickets, travel insurance, anything not listed above.
 
 ITINERARY SUMMARY:
-Day 1 (Thu night): Depart Delhi Akshardham by bus, Chandigarh route, overnight journey
+Day 1 (Fri): Overnight bus from Delhi Akshardham (departs Thu night, arrives Manali Fri morning)
 Day 2: Arrive Manali, check-in, Hadimba Devi Temple, Mall Road, café hopping, dinner & stay
 Day 3: Breakfast, Solang Valley, optional ATV/ropeway (extra cost), Atal Tunnel, Koksar village, snow viewpoints, dinner & stay
 Day 4: Breakfast, Kullu sightseeing, rafting area visit, transfer to Kasol, explore Kasol, dinner & stay
@@ -51,6 +51,6 @@ Q: Are adventure activities included? A: No — ATV, ropeway etc. are optional a
 Q: Solo travellers? A: Yes, welcome.
 Q: Can itinerary change? A: Yes — weather, road, permits, safety may cause changes.
 Q: Payment method? A: Razorpay (UPI, card, netbanking). Card has 3% surcharge.
-Q: When do trips depart? A: Every Friday. Share nearest batch first, then ask preferred month.
+Q: When do trips depart? A: Every Friday batch. Bus leaves Delhi Thursday night, reaches Manali Friday morning. Say "Friday batch" to customer.
 
 ================ END ================
