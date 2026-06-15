@@ -297,8 +297,9 @@ async function callAI(messages) {
       const client = getNvidiaClient(model.apiKey);
       const res = await client.chat.completions.create({ model: model.model, messages, temperature: 0.4, max_tokens: 500 });
       const msg = res.choices?.[0]?.message;
-      // Reasoning models return null content — fall back to reasoning_content
-      const text = (msg?.content || msg?.reasoning_content || '').trim();
+      const showReasoning = config.showReasoning === true;
+      // Reasoning models may return null content; fall back to reasoning_content only when enabled
+      const text = (msg?.content || (showReasoning ? msg?.reasoning_content : '') || '').trim();
       if (text) return text;
     }
   } catch (err) {
@@ -438,6 +439,18 @@ async function handleAdminCommand(jid, text) {
     await sock.sendMessage(jid, { text: `🔥 *Hot Leads*\n\n${hot}` });
     return true;
   }
+  if (cmd === '/reasoning on') {
+    config.showReasoning = true;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    await sock.sendMessage(jid, { text: '🧠 Reasoning output: *ON* — AI will show chain-of-thought in replies.' });
+    return true;
+  }
+  if (cmd === '/reasoning off') {
+    config.showReasoning = false;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    await sock.sendMessage(jid, { text: '🧠 Reasoning output: *OFF* — AI will send clean replies only.' });
+    return true;
+  }
   if (cmd === '/model') {
     const active = getActiveModel();
     const list = AI_MODELS.map(m => `${m.id === active.id ? '✅' : '  '} ${m.id}. ${m.name}`).join('\n');
@@ -462,7 +475,7 @@ async function handleAdminCommand(jid, text) {
   }
   if (cmd === '/help') {
     await sock.sendMessage(jid, {
-      text: '🛠 *Admin Commands*\n\n/ai on — enable AI\n/ai off — disable AI\n/status — stats\n/leads — hot leads list\n/model — list AI models\n/model N — switch to model N\n/help — this menu',
+      text: '🛠 *Admin Commands*\n\n/ai on — enable AI\n/ai off — disable AI\n/status — stats\n/leads — hot leads list\n/model — list AI models\n/model N — switch to model N\n/reasoning on — show AI chain-of-thought\n/reasoning off — clean replies only\n/help — this menu',
     });
     return true;
   }
