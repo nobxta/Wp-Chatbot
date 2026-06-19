@@ -134,9 +134,12 @@ function getChatState(jid) {
       history: [],
       lead: {
         stage: 'new',           // conversation stage
+        name: null,
         destination: null,
         travellers: null,
         departureCity: null,
+        travelDate: null,
+        groupType: null,
         qualified: false,
         bookingStep: null,      // name | age | gender | city | done
         booking: {},            // collected booking details
@@ -333,27 +336,18 @@ If user asks about a previous booking or earlier discussion:
 Example: "Haan, aapne 10 log ke liye 19 June Manali-Kasol batch ke baare mein baat ki thi, Delhi departure. Maine team ko mark kar diya tha. Kya team ne contact kiya?"
 
 ━━━ RULE 1: QUALIFY BEFORE YOU PRESENT ━━━
-When someone says "share details" / "interested" / "tell me more" — DO NOT dump the itinerary, price, inclusions, or offers.
+When someone says "share details" / "interested" / "tell me more" — DO NOT dump the itinerary, price, inclusions, or offers immediately. Talk according to the package details only.
 
-A real travel consultant first understands WHO they're talking to. You do the same.
+Your main motive is to qualify the customer and confirm a solid lead by collecting these 4 details one-by-one:
+  1. Name (ask naturally: "Naam kya hai aapka?")
+  2. Dates (check dates according to the plan — batch departs every Friday, refer to UPCOMING BATCHES)
+  3. Members count (how many people/friends are traveling)
+  4. Pickup location (explain: "We mainly start from Delhi, but pickup is also available from Chandigarh." and ask which one they prefer)
 
-Collect these 4 things before presenting anything:
-  1. Group size (how many people)
-  2. Group type (friends / couple / solo / family)
-  3. Preferred date
-  4. Departure city (if not obvious)
+Ask for these details ONE by ONE, in a natural conversation. Do not ask for multiple details in a single message.
+Before sharing the full details, you can tell them: "For better info, I need your details." or "Aapki help ke liye mujhe thodi details chahiye."
 
-You don't need all 4 before sharing anything — but get at least 2-3 first.
-
-Ask ONE question at a time. Make it feel natural, not a form.
-
-GOOD opening when someone says "interested / share details":
-"Hey! 😊 Manali trip available hai — before I share the full breakdown, are you planning this solo, with friends, or as a couple?"
-→ They answer → "Nice! And how many travelers are you thinking?"
-→ They answer → NOW share the relevant info, tailored to their group.
-
-BAD: Immediately dumping price + itinerary + rafting offer + breakfast count.
-That's a brochure, not a conversation. It gets ignored.
+Once you have collected the details, summarize and share them back to the user to confirm they are correct before moving forward.
 
 ━━━ RULE 2: RELEVANCE FILTER ━━━
 Answer exactly what was asked. Nothing else first.
@@ -386,8 +380,8 @@ If the user already answered it — DO NOT ask again. Ever.
 
 Known info to track from history:
 - Travel date → if mentioned, never ask again
-- Group size → if mentioned, never ask again
-- Departure city → if mentioned, never ask again
+- Group size / Members count → if mentioned, never ask again
+- Departure city / Pickup location → if mentioned, never ask again
 - Name → if mentioned, use it, never ask again
 - Group type (friends/couple/solo) → if mentioned, never ask again
 
@@ -401,11 +395,10 @@ RIGHT:
 User: "3 July"  → already in history → move to next missing piece or confirm what you have.
 
 ━━━ RULE 6: SALES PROGRESSION ━━━
-Once you have: date + group size → share the trip summary. Don't keep collecting.
-Once you have: date + group size + city → you have enough. Move toward booking.
+Once you have the details (Name, travel date, group size/members, and pickup location), confirm them back to the user to verify the lead:
+"Perfect — Name: *[Name]*, Date: *[Date]*, Travelers: *[Count]*, Pickup: *[Delhi/Chandigarh]*. details share kar raha hoon, bas confirm karo."
 
-After getting 2-3 qualifying answers, stop interrogating and share the itinerary naturally:
-"Perfect — 3 July, 2 log, Panipat pickup possible. Trip details 👇" then give a short natural summary.
+After verifying, share the natural conversational trip summary.
 
 Jokes and banter: one exchange is fine, then steer back. Don't keep riffing when the goal is booking.
 "Ek bauna hai" → laugh once → "Toh 2 log count karta hu, aur date kya prefer karoge?"
@@ -481,11 +474,11 @@ Better: "Aap 26 June wale batch ki baat kar rahe ho?" (confirm your interpretati
 "What to do now?" / "How do I book?" → explain next steps naturally
 "Bye" → one warm line, then stop
 
-━━━ STYLE ━━━
+━━━ STYLE & LANGUAGE ━━━
 Write like you're texting a friend on WhatsApp. Short. Real. Conversational.
-Language: match theirs EXACTLY. If they write in English → reply in English. Hindi → Hindi. Hinglish → Hinglish. Never switch languages on them.
+Language: Always chat in the user's preferred language. If they message in Hindi/Hinglish, reply only in Hindi/Hinglish. If they message in English, reply only in English. Sticking to the customer's language builds trust.
 Emoji: 1 per 4–5 messages max. Not every reply.
-Tone: mirror theirs — bro/casual/formal.
+Tone: Mirror theirs — bro/casual/formal. Never spam or send redundant follow-ups.
 
 FORMATTING — USE SPARINGLY, LIKE A HUMAN:
 WhatsApp markdown is allowed but only when it adds clarity.
@@ -517,10 +510,11 @@ Before or during booking intent, ask name naturally — once, not every message.
 "Naam kya hai aapka?" or "By the way, naam bata do" — casual, not formal.
 Once collected, use it. Don't ask again.
 
-━━━ HARD RULES ━━━
+━━━ HARD RULES & GENERAL CONDUCT ━━━
 Never say "booking confirmed / seat booked / payment received."
 Never share a payment link.
-Never invent facts — use only TRIP KNOWLEDGE below.
+Never invent facts — use only TRIP KNOWLEDGE below. Talk strictly according to the package details.
+Never spam the customer or send repeated messages.
 Unsure → "Let me check with the team."
 For booking → continue conversation naturally, team is being notified in background.
 
@@ -617,6 +611,7 @@ function buildLeadCard(jid, lead, state) {
   const name     = lead.name || lead.booking?.name || 'Not collected';
   const trip     = lead.destination   || 'Manali + Kasol';
   const city     = lead.departureCity || 'Not confirmed';
+  const date     = lead.travelDate    || 'Not confirmed';
   const pax      = lead.travellers    || 'Unknown';
   const groupType = lead.groupType    || 'Not collected';
 
@@ -626,20 +621,22 @@ function buildLeadCard(jid, lead, state) {
   if (lead.destination)    facts.push(`Trip interest: ${trip}`);
   if (lead.travellers)     facts.push(`Travellers confirmed: ${pax}`);
   if (lead.departureCity)  facts.push(`Departure city: ${city}`);
+  if (lead.travelDate)     facts.push(`Travel date: ${date}`);
   if (lead.groupType)      facts.push(`Group type: ${groupType}`);
-  if (lead.booking?.name)  facts.push(`Name shared: ${name}`);
+  if (lead.name)           facts.push(`Name shared: ${name}`);
 
   const lastUserMsg = [...history].reverse().find(m => m.role === 'user')?.text || '';
 
   return (
-    `🔥 *HOT LEAD — BOOKING INTENT*\n\n` +
+    `🔥 *HOT LEAD — DETAILS COLLECTED*\n\n` +
     `📱 WhatsApp: +${phone}\n` +
     `👤 Name: ${name}\n` +
     `🏔️ Trip: ${trip}\n` +
-    `🚌 Departure: ${city} → Delhi Akshardham\n` +
+    `📅 Travel Date: ${date}\n` +
+    `🚌 Pickup: ${city}\n` +
     `👥 Travellers: ${pax}\n` +
     `👥 Group type: ${groupType}\n` +
-    `📊 Booking intent: HIGH\n\n` +
+    `📊 Status: Lead details verified\n\n` +
     (facts.length ? `📋 *Conversation summary:*\n${facts.map(f => `• ${f}`).join('\n')}\n\n` : '') +
     `💬 *Latest message:* "${lastUserMsg.slice(0,120)}"\n\n` +
     `⚡ *Action: Call or message immediately. High-conversion lead.*`
@@ -649,21 +646,22 @@ function buildLeadCard(jid, lead, state) {
 function buildFollowUpAlert(jid, lead, message) {
   const rawId      = jid.replace('@s.whatsapp.net','').replace('@lid','');
   const phone      = jid.endsWith('@lid') ? `${rawId} (LID)` : `+${rawId}`;
-  const name       = lead.booking?.name || 'Not collected';
+  const name       = lead.name || lead.booking?.name || 'Not collected';
   const trip       = lead.destination   || 'Manali + Kasol';
   const pax        = lead.travellers    || 'Unknown';
   const city       = lead.departureCity || 'Unknown';
+  const date       = lead.travelDate    || 'Unknown';
   const minsSince  = lead.handoffTs
     ? Math.round((Date.now() - lead.handoffTs) / 60000)
     : null;
 
   return (
-    `💬 *LEAD REPLIED*\n\n` +
+    `💬 *LEAD REPLIED (ADDITIONAL INFO)*\n\n` +
     `📱 +${phone} | 👤 ${name}\n` +
-    `🏔️ ${trip} | 👥 ${pax} travellers | 🚌 ${city}\n\n` +
+    `🏔️ ${trip} | 📅 Date: ${date} | 👥 ${pax} travellers | 🚌 Pickup: ${city}\n\n` +
     `💬 Message: "${message.slice(0,200)}"\n` +
     (minsSince !== null ? `⏰ ${minsSince}m since handoff\n` : '') +
-    `📌 Status: Waiting for human response.`
+    `📌 Status: Review and respond.`
   );
 }
 
@@ -697,28 +695,16 @@ async function handleBookingFlow(jid, text) {
   return false;
 }
 
-// Signals that actually matter to the sales team
-const FOLLOWUP_TRIGGERS = [
-  /\b(book|booking|payment|pay|confirm|seat|advance|how.*(do|to).*book|kaise.*book|kitna.*dena|details share)\b/i,
-  /\b(call|callback|phone|number|contact me|reach me|mujhe call)\b/i,
-  /\b(\d{10})\b/,           // phone number shared
-  /\b(change|different|other|alag|badal).*(date|batch|trip|city)/i,
-];
-
 async function notifyFollowUp(jid, lead, message) {
   const t = message.trim();
   // Skip acks, greetings, and noise
   if (ACK_REGEX.test(t))   return;
   if (GREET_REGEX.test(t)) return;
-  if (t.length < 5)        return;
+  if (t.length < 3)        return;
 
-  // Only fire if message contains something actionable for the sales team
-  const isActionable = FOLLOWUP_TRIGGERS.some(r => r.test(t));
-  if (!isActionable) return;
-
-  // 10-min cooldown so same Q doesn't spam
+  // 5-min cooldown to avoid rapid messaging spam
   const last = lead.lastFollowUpTs || 0;
-  if (Date.now() - last < 10 * 60 * 1000) return;
+  if (Date.now() - last < 5 * 60 * 1000) return;
 
   lead.lastFollowUpTs = Date.now();
   saveMemory();
@@ -1073,7 +1059,7 @@ async function updateLeadStage(jid, latestMsg) {
       role: 'system',
       content:
         'You are a CRM field extractor. Respond ONLY with raw JSON, no markdown, no explanation.\n' +
-        'Schema: {"name":string|null,"destination":string|null,"travellers":string|null,"departureCity":string|null,"groupType":string|null,"stage":"new"|"interested"|"price_shared"|"hot_lead"|"booking_intent"|null}\n\n' +
+        'Schema: {"name":string|null,"destination":string|null,"travellers":string|null,"departureCity":string|null,"travelDate":string|null,"groupType":string|null,"stage":"new"|"interested"|"price_shared"|"hot_lead"|"booking_intent"|null}\n\n' +
         'STRICT RULES:\n' +
         '1. Extract ONLY from the single customer message provided. Do NOT infer from context.\n' +
         '2. A field must be null unless the customer EXPLICITLY states it in this exact message.\n' +
@@ -1082,7 +1068,8 @@ async function updateLeadStage(jid, latestMsg) {
         '5. departureCity: only if customer explicitly names their departure city. null otherwise.\n' +
         '6. destination: only if customer asks about or mentions a trip destination. null otherwise.\n' +
         '7. stage: hot_lead ONLY if customer asks price/availability. booking_intent ONLY if customer says they want to book. null for everything else.\n' +
-        '8. name: only if customer introduces themselves by name in this exact message.',
+        '8. name: only if customer introduces themselves by name in this exact message.\n' +
+        '9. travelDate: only if customer specifies their preferred travel date or batch (e.g. "19 June", "next Friday"). null otherwise.',
     },
     { role: 'user', content: `Customer message: "${latestMsg}"` },
   ]);
@@ -1095,11 +1082,13 @@ async function updateLeadStage(jid, latestMsg) {
     const prevTravellers = lead.travellers;
     const prevCity       = lead.departureCity;
     const prevDest       = lead.destination;
+    const prevTravelDate = lead.travelDate;
 
     if (data.name && !lead.name)              lead.name          = String(data.name);
     if (data.destination)                     lead.destination   = String(data.destination);
     if (data.travellers)                      lead.travellers    = String(data.travellers);
     if (data.departureCity)                   lead.departureCity = String(data.departureCity);
+    if (data.travelDate)                      lead.travelDate    = String(data.travelDate);
     if (data.groupType)                       lead.groupType     = String(data.groupType);
     if (data.stage && !['booking_started','payment_pending','confirmed'].includes(lead.stage))
       lead.stage = data.stage;
@@ -1107,7 +1096,8 @@ async function updateLeadStage(jid, latestMsg) {
     saveMemory();
 
     // HOT LEAD — fire once only (adminNotified flag is the lock)
-    if ((data.stage === 'hot_lead' || data.stage === 'booking_intent') && !lead.adminNotified) {
+    const hasKeyDetails = Boolean(lead.name && lead.travellers && lead.departureCity);
+    if ((data.stage === 'hot_lead' || data.stage === 'booking_intent' || hasKeyDetails) && !lead.adminNotified) {
       lead.adminNotified = true;
       lead.handoffTs     = Date.now();
       saveMemory();
@@ -1116,12 +1106,13 @@ async function updateLeadStage(jid, latestMsg) {
       return;
     }
 
-    // KEY FIELD UPDATE — notify admin only if travellers/city/destination changed
+    // KEY FIELD UPDATE — notify admin only if travellers/city/destination/date changed
     if (lead.adminNotified) {
       const changed = [];
       if (data.travellers && data.travellers !== prevTravellers) changed.push(`Travellers: ${prevTravellers || '?'} → ${data.travellers}`);
       if (data.departureCity && data.departureCity !== prevCity)   changed.push(`City: ${prevCity || '?'} → ${data.departureCity}`);
       if (data.destination && data.destination !== prevDest)       changed.push(`Trip: ${prevDest || '?'} → ${data.destination}`);
+      if (data.travelDate && data.travelDate !== prevTravelDate)   changed.push(`Travel Date: ${prevTravelDate || '?'} → ${data.travelDate}`);
       if (changed.length) {
         const phone = jid.replace('@s.whatsapp.net','').replace('@lid','');
         await notifyAdmins(
