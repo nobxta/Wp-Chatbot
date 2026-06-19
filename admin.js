@@ -144,6 +144,7 @@ function getChatState(jid) {
         bookingStep: null,      // name | age | gender | city | done
         booking: {},            // collected booking details
         abuseCount: 0,
+        followUpSent: false,    // track if 24h follow-up was sent
       },
       welcomed: false,
       lastAdminReplyTs: 0,
@@ -712,6 +713,71 @@ async function notifyFollowUp(jid, lead, message) {
 }
 
 /* ============================================================
+ * 7.5. AUTOMATED 24-HOUR FOLLOW-UP
+ * ============================================================ */
+
+let followUpJobStarted = false;
+
+function parseFollowUpReply(text) {
+  const t = text.trim();
+  if (/^(1|1️⃣|one|yes|interested|proceed|haan|haa|yes interested)\b/i.test(t)) return 1;
+  if (/^(2|2️⃣|two|maybe|need details|details|details chahie|batao|bata)\b/i.test(t)) return 2;
+  if (/^(3|3️⃣|three|future|update me|future trips|baad me|next time)\b/i.test(t)) return 3;
+  if (/^(4|4️⃣|four|not interested|no|nhi|nahi|no thanks|nahi chahiye)\b/i.test(t)) return 4;
+  return null;
+}
+
+function startFollowUpJob() {
+  console.log('[INFO] Background 24-Hour Follow-Up Job initialized.');
+  setInterval(async () => {
+    if (!connected || !sock) return;
+    const now = Date.now();
+    const twentyFourHours = 24 * 60 * 60 * 1000;
+
+    for (const jid of Object.keys(memory)) {
+      // Do not follow up with admin JIDs
+      const jidNorm = jid.replace('@lid', '@s.whatsapp.net');
+      if (ADMIN_JIDS.includes(jid) || ADMIN_JIDS.includes(jidNorm)) continue;
+
+      const state = memory[jid];
+      const lead = state.lead;
+      if (!state.history || state.history.length === 0) continue;
+
+      // Check if the last message in history was from us (assistant or admin)
+      const lastMsg = state.history[state.history.length - 1];
+      if (lastMsg.role === 'assistant' || lastMsg.role === 'admin') {
+        const timePassed = now - lastMsg.ts;
+        // If more than 24 hours have passed and we haven't sent the follow-up yet
+        if (timePassed > twentyFourHours && !lead.followUpSent) {
+          // If the lead stage is 'ignored' or 'not_interested', do not send
+          if (['ignored', 'not_interested'].includes(lead.stage)) continue;
+
+          // Prepare the follow-up message
+          const followUpMsg = `Hey 👋\n\n` +
+            `Since I haven't heard back from you in a while, I just wanted to get a quick update.\n\n` +
+            `Please reply with the number that best matches your situation:\n\n` +
+            `1️⃣ Yes, I'm interested and would like to proceed\n\n` +
+            `2️⃣ Maybe, I need some more details\n\n` +
+            `3️⃣ Not for this trip, but keep me updated about future trips\n\n` +
+            `4️⃣ Not interested\n\n` +
+            `Just send the number, and I'll update things from my side accordingly. 😊`;
+
+          try {
+            lead.followUpSent = true;
+            saveMemory();
+            pushHistory(jid, 'assistant', followUpMsg);
+            await sock.sendMessage(jid, { text: followUpMsg });
+            console.log(`[FOLLOW-UP SENT] → ${jid}`);
+          } catch (e) {
+            console.error(`[ERROR] Sending follow-up to ${jid}:`, e.message);
+          }
+        }
+      }
+    }
+  }, 10 * 60 * 1000); // Check every 10 minutes
+}
+
+/* ============================================================
  * 8. ADMIN COMMANDS
  * ============================================================ */
 
@@ -850,6 +916,10 @@ async function connectToWhatsApp() {
         } catch (e) { /* non-fatal */ }
       }
       console.log('[INFO] Admin JIDs:', ADMIN_JIDS);
+      if (!followUpJobStarted) {
+        followUpJobStarted = true;
+        startFollowUpJob();
+      }
     }
     if (connection === 'close') {
       connected = false;
@@ -953,6 +1023,58 @@ async function handleMessage(msg) {
   }
 
   pushHistory(jid, 'user', displayText);
+
+  // Check if we were waiting for a follow-up reply
+  const wasFollowUpWaiting = lead.followUpSent;
+  lead.followUpSent = false; // Reset follow-up flag since they replied
+  saveMemory();
+
+  if (wasFollowUpWaiting) {
+    const choice = parseFollowUpReply(displayText);
+    if (choice !== null) {
+      const phone = jid.replace('@s.whatsapp.net','').replace('@lid','');
+      let replyText = '';
+
+      if (choice === 1) {
+        lead.stage = 'booking_intent';
+        replyText = `Acha sahi hai! Let's proceed. For better info, mujhe aapki details chahiye. Please tell me your name, group size/members count, and pickup location (mainly Delhi or Chandigarh)?`;
+        await notifyAdmins(
+          `📱 *FOLLOW-UP CHOICE*\n` +
+          `📱 +${phone} | 👤 ${lead.name || 'Unknown'}\n` +
+          `✅ Selected: *Option 1* (Interested & wants to proceed)\n` +
+          `⚡ Action: AI is asking for details. Monitor or take over.`
+        );
+      } else if (choice === 2) {
+        replyText = `Sure! Aapko kya details chahiye? stay, itinerary, ya pricing?`;
+        await notifyAdmins(
+          `📱 *FOLLOW-UP CHOICE*\n` +
+          `📱 +${phone} | 👤 ${lead.name || 'Unknown'}\n` +
+          `✅ Selected: *Option 2* (Needs more details)\n` +
+          `⚡ Action: AI is answering details.`
+        );
+      } else if (choice === 3) {
+        replyText = `Noted! Maine register kar liya hai. Future trips ki updates aate rahenge. Thank you! 😊`;
+        await notifyAdmins(
+          `📱 *FOLLOW-UP CHOICE*\n` +
+          `📱 +${phone} | 👤 ${lead.name || 'Unknown'}\n` +
+          `✅ Selected: *Option 3* (Keep updated on future trips)`
+        );
+      } else if (choice === 4) {
+        lead.stage = 'ignored';
+        replyText = `Koi baat nahi, thank you batane ke liye! Have a great day ahead! 😊`;
+        await notifyAdmins(
+          `📱 *FOLLOW-UP CHOICE*\n` +
+          `📱 +${phone} | 👤 ${lead.name || 'Unknown'}\n` +
+          `❌ Selected: *Option 4* (Not interested)\n` +
+          `📌 Status: Lead marked as ignored.`
+        );
+      }
+
+      pushHistory(jid, 'assistant', replyText);
+      await sock.sendMessage(jid, { text: replyText });
+      return; // Stop execution here, don't let AI reply
+    }
+  }
 
   if (!config.botEnabled) return;
 
