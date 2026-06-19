@@ -873,6 +873,11 @@ function initTelegramBot() {
         fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
         await tgBot.sendMessage(cid, `🤖 AI Response: *${config.botEnabled ? 'ENABLED (Yes)' : 'DISABLED (No)'}*`, { parse_mode: 'Markdown' });
         sendControlPanel(cid, msg.message_id);
+      } else if (action === 'toggle_anytime') {
+        config.replyAnytime = !config.replyAnytime;
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+        await tgBot.sendMessage(cid, `🕒 Reply Anytime: *${config.replyAnytime ? 'ENABLED (Anytime)' : 'DISABLED (Wait 30m if active)'}*`, { parse_mode: 'Markdown' });
+        sendControlPanel(cid, msg.message_id);
       } else if (action === 'select_model') {
         const keyboard = AI_MODELS.map(m => [{
           text: `${m.id === activeModelId ? '✅ ' : ''}${m.name}`,
@@ -946,6 +951,7 @@ function sendControlPanel(targetId = tgChatId, editMessageId = null) {
   if (!tgBot || !targetId) return;
 
   const aiStatus = config.botEnabled ? 'Yes ✅' : 'No ❌';
+  const replyAnytimeStatus = config.replyAnytime ? 'Yes (Anytime) 🕒' : 'No (Wait 30m if active) ⏳';
   
   let waStatus = 'Disconnected 🔴';
   if (connected) {
@@ -959,6 +965,7 @@ function sendControlPanel(targetId = tgChatId, editMessageId = null) {
   const text = `🛠 *Ghumakkars WhatsApp Bot Control Panel*\n\n` +
                `• *WhatsApp Status:* ${waStatus}\n` +
                `• *AI Response:* ${aiStatus}\n` +
+               `• *Reply Anytime:* ${replyAnytimeStatus}\n` +
                `• *Active Model:* ${activeModel}\n\n` +
                `Choose an action:`;
 
@@ -968,6 +975,9 @@ function sendControlPanel(targetId = tgChatId, editMessageId = null) {
     ],
     [
       { text: `🤖 AI Response: ${config.botEnabled ? 'Disable ❌' : 'Enable ✅'}`, callback_data: 'toggle_ai' }
+    ],
+    [
+      { text: `🕒 Reply Anytime: ${config.replyAnytime ? 'Disable ❌' : 'Enable ✅'}`, callback_data: 'toggle_anytime' }
     ],
     [
       { text: '🤖 Select Model', callback_data: 'select_model' }
@@ -1015,6 +1025,7 @@ function sendControlPanel(targetId = tgChatId, editMessageId = null) {
     });
   }
 }
+
 
 async function sendTelegramMessage(text) {
   if (!tgBot || !tgChatId) return;
@@ -1163,7 +1174,6 @@ async function connectToWhatsApp() {
       connecting = false;
       qrSentThisSession = false;
       console.log('\n✅ Connected Successfully\n');
-      sendTelegramMessage('✅ *WhatsApp Connected Successfully!*');
       
       // Delete QR message if it exists
       if (lastQrMsgId) {
@@ -1197,15 +1207,15 @@ async function connectToWhatsApp() {
       qrSentThisSession = false;
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.log(`\n❌ WhatsApp Disconnected (code ${reason})`);
-      sendTelegramMessage(`❌ *WhatsApp Disconnected* (code *${reason}*)`);
 
-      if (shouldReconnect && reason !== DisconnectReason.loggedOut) {
+      const isReplaced = (reason === DisconnectReason.connectionReplaced);
+      if (shouldReconnect && reason !== DisconnectReason.loggedOut && !isReplaced) {
         console.log('[INFO] Reconnecting in 5s...');
-        sendTelegramMessage('🔄 *Reconnecting in 5s...*');
         setTimeout(connectToWhatsApp, 5000);
       } else {
+        shouldReconnect = false;
         connecting = false;
-        console.log('[INFO] Connection closed. Auto-reconnect is disabled or logged out.');
+        console.log(`[INFO] Connection closed. Auto-reconnect is disabled (Reason: ${reason}).`);
       }
       
       // Refresh control panel live status
@@ -1378,11 +1388,13 @@ async function handleMessage(msg) {
 
   if (!config.botEnabled) return;
 
-  // Don't interrupt active human conversation
-  const sinceAdmin = Date.now() - (state.lastAdminReplyTs || 0);
-  if (state.lastAdminReplyTs && sinceAdmin < AUTO_REPLY_MS) {
-    console.log(`[SKIP] ${jid}: admin replied ${Math.round(sinceAdmin / 60000)}m ago`);
-    return;
+  // Don't interrupt active human conversation unless replyAnytime is enabled
+  if (!config.replyAnytime) {
+    const sinceAdmin = Date.now() - (state.lastAdminReplyTs || 0);
+    if (state.lastAdminReplyTs && sinceAdmin < AUTO_REPLY_MS) {
+      console.log(`[SKIP] ${jid}: admin replied ${Math.round(sinceAdmin / 60000)}m ago`);
+      return;
+    }
   }
 
   // If bot is already processing a reply for this user, buffer this message and exit.
