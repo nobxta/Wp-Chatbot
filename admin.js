@@ -38,7 +38,11 @@ const {
 const { Boom } = require('@hapi/boom');
 const pino   = require('pino');
 const qrcode = require('qrcode-terminal');
-const telegram = require('./telegram');
+const TelegramBot = require('node-telegram-bot-api');
+const QRCode = require('qrcode');
+
+let tgBot = null;
+let tgChatId = null;
 
 /* ============================================================
  * 1. CONFIG
@@ -607,7 +611,7 @@ async function notifyAdmins(message) {
       catch (e) { console.error('[ERROR] Admin notify:', e.message); }
     }
   }
-  await telegram.sendTelegramMessage(message);
+  await sendTelegramMessage(message);
 }
 
 function buildLeadCard(jid, lead, state) {
@@ -783,7 +787,7 @@ function startFollowUpJob() {
 }
 
 /* ============================================================
- * 7.7. TELEGRAM BOT HELPERS
+ * 7.7. TELEGRAM BOT INTEGRATION
  * ============================================================ */
 
 function getStatusText() {
@@ -811,47 +815,144 @@ function getLeadsText() {
   return `🔥 *Hot Leads*\n\n${hot}`;
 }
 
-function getTelegramModels() {
-  return AI_MODELS.map(m => ({
-    id: m.id,
-    name: m.name,
-    active: m.id === activeModelId
-  }));
-}
+function initTelegramBot() {
+  const token = config.telegramBotToken;
+  const configChatId = config.telegramChatId;
 
-function switchAiModel(id) {
-  const found = AI_MODELS.find(m => m.id === id);
-  if (found) {
-    activeModelId = id;
-    config.activeModel = id;
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-    return found.name;
+  if (!token || token === 'YOUR_TELEGRAM_BOT_TOKEN') {
+    console.warn('[WARN] telegramBotToken not set or default in config.json. Telegram bot is disabled.');
+    return;
   }
-  return null;
-}
 
-function toggleAiReplies() {
-  config.botEnabled = !config.botEnabled;
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-  return config.botEnabled;
-}
+  tgBot = new TelegramBot(token, { polling: true });
+  tgChatId = configChatId && configChatId !== 'YOUR_TELEGRAM_CHAT_ID' ? configChatId : null;
 
-function startWhatsApp() {
-  if (connected) return 'Already connected';
-  shouldReconnect = true;
-  connectToWhatsApp();
-  return 'Starting WhatsApp connection...';
-}
+  console.log('[INFO] Telegram Bot initialized.');
 
-function stopWhatsApp() {
-  if (!connected && !sock) return 'Already stopped';
-  shouldReconnect = false;
-  if (sock) {
-    try { sock.end(); } catch (e) {}
-    sock = null;
+  if (tgChatId) {
+    sendTelegramMessage('🤖 *Ghumakkars Chatbot Telegram Dashboard Started*');
+    sendControlPanel();
   }
-  connected = false;
-  return 'Stopped WhatsApp connection.';
+
+  // Listen for messages
+  tgBot.on('message', async (msg) => {
+    const text = msg.text?.trim();
+    if (!text) return;
+
+    if (!tgChatId) {
+      tgChatId = msg.chat.id;
+      console.log(`[TELEGRAM] Set active chatId to ${tgChatId}. Save this in config.json: "telegramChatId": "${tgChatId}"`);
+      await tgBot.sendMessage(tgChatId, `✅ *Connected to Dashboard!* Active chat ID is set to: \`${tgChatId}\`.\nPlease update this in your \`config.json\` to persist notifications.`);
+    }
+
+    if (text === '/start' || text === '/menu') {
+      sendControlPanel(msg.chat.id);
+    }
+  });
+
+  // Handle callback queries (inline buttons)
+  tgBot.on('callback_query', async (callbackQuery) => {
+    const action = callbackQuery.data;
+    const msg = callbackQuery.message;
+    const cid = msg.chat.id;
+
+    try {
+      await tgBot.answerCallbackQuery(callbackQuery.id);
+    } catch (e) { /* ignore expired query */ }
+
+    try {
+      if (action === 'toggle_ai') {
+        config.botEnabled = !config.botEnabled;
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+        await tgBot.sendMessage(cid, `🤖 AI Response: *${config.botEnabled ? 'ENABLED (Yes)' : 'DISABLED (No)'}*`, { parse_mode: 'Markdown' });
+        sendControlPanel(cid, msg.message_id);
+      } else if (action === 'logout_wa') {
+        if (!sock) {
+          await tgBot.sendMessage(cid, '❌ *WhatsApp is not connected/running.*', { parse_mode: 'Markdown' });
+          return;
+        }
+        await tgBot.sendMessage(cid, '🚪 *Logging out from WhatsApp...*', { parse_mode: 'Markdown' });
+        try {
+          shouldReconnect = false;
+          await sock.logout();
+        } catch (e) {
+          console.error('[ERROR] WhatsApp logout:', e.message);
+        }
+        // Delete auth directory to clear session completely
+        try {
+          if (fs.existsSync(AUTH_DIR)) {
+            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+          }
+        } catch (err) {
+          console.error('[ERROR] Failed to delete auth info folder:', err.message);
+        }
+        connected = false;
+        sock = null;
+        await tgBot.sendMessage(cid, '✅ *Logged out successfully and credentials cleared.*', { parse_mode: 'Markdown' });
+        sendControlPanel(cid, msg.message_id);
+      }
+    } catch (e) {
+      console.error('[TELEGRAM ERROR] Callback action error:', e.message);
+    }
+  });
+}
+
+function sendControlPanel(targetId = tgChatId, editMessageId = null) {
+  if (!tgBot || !targetId) return;
+
+  const aiStatus = config.botEnabled ? 'Yes ✅' : 'No ❌';
+  const waStatus = connected ? 'Connected 🟢' : 'Disconnected 🔴';
+
+  const text = `🛠 *Ghumakkars WhatsApp Bot Control Panel*\n\n` +
+               `• *WhatsApp Status:* ${waStatus}\n` +
+               `• *AI Response:* ${aiStatus}\n\n` +
+               `Choose an action:`;
+               
+  const replyMarkup = {
+    inline_keyboard: [
+      [
+        { text: `🤖 AI Response: ${config.botEnabled ? 'Disable ❌' : 'Enable ✅'}`, callback_data: 'toggle_ai' }
+      ],
+      [
+        { text: '🚪 Logout WhatsApp', callback_data: 'logout_wa' }
+      ]
+    ]
+  };
+
+  if (editMessageId) {
+    tgBot.editMessageText(text, {
+      chat_id: targetId,
+      message_id: editMessageId,
+      parse_mode: 'Markdown',
+      reply_markup: replyMarkup
+    }).catch(() => {});
+  } else {
+    tgBot.sendMessage(targetId, text, {
+      parse_mode: 'Markdown',
+      reply_markup: replyMarkup
+    });
+  }
+}
+
+async function sendTelegramMessage(text) {
+  if (!tgBot || !tgChatId) return;
+  try {
+    await tgBot.sendMessage(tgChatId, text, { parse_mode: 'Markdown' });
+  } catch (e) {
+    console.error('[TELEGRAM ERROR] Failed to send message:', e.message);
+  }
+}
+
+async function sendTelegramQrCode(qrString) {
+  if (!tgBot || !tgChatId) return;
+  try {
+    const buffer = await QRCode.toBuffer(qrString, { width: 300 });
+    await tgBot.sendPhoto(tgChatId, buffer, {
+      caption: '🔑 *WhatsApp QR Login*\nScan this QR code in WhatsApp to link your device.'
+    });
+  } catch (e) {
+    console.error('[TELEGRAM ERROR] Failed to send QR code photo:', e.message);
+  }
 }
 
 /* ============================================================
@@ -963,12 +1064,12 @@ async function connectToWhatsApp() {
     if (qr) {
       console.log('\n[INFO] Scan QR code with WhatsApp (Linked Devices):\n');
       qrcode.generate(qr, { small: true });
-      await telegram.sendTelegramQrCode(qr);
+      await sendTelegramQrCode(qr);
     }
     if (connection === 'open') {
       connected = true;
       console.log('\n✅ Connected Successfully\n');
-      telegram.sendTelegramMessage('✅ *WhatsApp Connected Successfully!*');
+      sendTelegramMessage('✅ *WhatsApp Connected Successfully!*');
       // Resolve admin phone numbers to LIDs (newer WhatsApp uses @lid JIDs)
       for (const num of adminNumbers) {
         try {
@@ -989,10 +1090,10 @@ async function connectToWhatsApp() {
       connected = false;
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.log(`\n❌ WhatsApp Disconnected (code ${reason})`);
-      telegram.sendTelegramMessage(`❌ *WhatsApp Disconnected* (code *${reason}*)`);
+      sendTelegramMessage(`❌ *WhatsApp Disconnected* (code *${reason}*)`);
       if (shouldReconnect && reason !== DisconnectReason.loggedOut) {
         console.log('[INFO] Reconnecting in 5s...');
-        telegram.sendTelegramMessage('🔄 *Reconnecting in 5s...*');
+        sendTelegramMessage('🔄 *Reconnecting in 5s...*');
         setTimeout(connectToWhatsApp, 5000);
       } else {
         console.log('[INFO] Connection closed. Auto-reconnect is disabled or logged out.');
@@ -1246,7 +1347,7 @@ async function handleMessage(msg) {
     await sock.sendMessage(jid, { text: reply });
     console.log(`[REPLY] → ${jid}: ${reply.slice(0, 80).replace(/\n/g, ' ')}...`);
     const logMsg = `💬 *Chat Update*\n📱 \`+${jid.replace('@s.whatsapp.net','').replace('@lid','')}\`\n👤 *${state.lead.name || 'Unknown'}*\n\n*User:* "${displayText.slice(0, 200)}"\n*AI:* "${reply.slice(0, 200)}"`;
-    telegram.sendTelegramMessage(logMsg);
+    sendTelegramMessage(logMsg);
 
     // Send itinerary PDF if they asked for it
     if (intent === 'ITINERARY') {
@@ -1370,18 +1471,7 @@ process.on('uncaughtException',  err => console.error('[ERROR] Uncaught exceptio
 console.log('[INFO] Starting Ghumakkars WhatsApp Bot...');
 
 // Initialize Telegram bot
-telegram.initTelegramBot(
-  config.telegramBotToken,
-  config.telegramChatId,
-  handleAdminCommand,
-  getStatusText,
-  getLeadsText,
-  getTelegramModels,
-  switchAiModel,
-  toggleAiReplies,
-  startWhatsApp,
-  stopWhatsApp
-);
+initTelegramBot();
 
 connectToWhatsApp();
 
