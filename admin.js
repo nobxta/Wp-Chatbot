@@ -37,7 +37,6 @@ const {
 
 const { Boom } = require('@hapi/boom');
 const pino   = require('pino');
-const qrcode = require('qrcode-terminal');
 const TelegramBot = require('node-telegram-bot-api');
 const QRCode = require('qrcode');
 
@@ -47,6 +46,7 @@ let lastQrSentTime = 0;
 let lastQrMsgId = null;
 let lastMenuMsgId = null;
 let connecting = false;
+let qrSentThisSession = false;
 
 /* ============================================================
  * 1. CONFIG
@@ -907,6 +907,7 @@ function initTelegramBot() {
         }
         await tgBot.sendMessage(cid, '🔑 *Starting WhatsApp connection...*', { parse_mode: 'Markdown' });
         connecting = true;
+        qrSentThisSession = false;
         shouldReconnect = true;
         connectToWhatsApp();
         sendControlPanel(cid, msg.message_id);
@@ -1152,17 +1153,15 @@ async function connectToWhatsApp() {
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      console.log('\n[INFO] Scan QR code with WhatsApp (Linked Devices):\n');
-      qrcode.generate(qr, { small: true });
-      const now = Date.now();
-      if (now - lastQrSentTime > 60000) {
-        lastQrSentTime = now;
+      if (!qrSentThisSession) {
+        qrSentThisSession = true;
         await sendTelegramQrCode(qr);
       }
     }
     if (connection === 'open') {
       connected = true;
       connecting = false;
+      qrSentThisSession = false;
       console.log('\n✅ Connected Successfully\n');
       sendTelegramMessage('✅ *WhatsApp Connected Successfully!*');
       
@@ -1195,6 +1194,7 @@ async function connectToWhatsApp() {
     }
     if (connection === 'close') {
       connected = false;
+      qrSentThisSession = false;
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.log(`\n❌ WhatsApp Disconnected (code ${reason})`);
       sendTelegramMessage(`❌ *WhatsApp Disconnected* (code *${reason}*)`);
