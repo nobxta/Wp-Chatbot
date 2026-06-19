@@ -38,6 +38,7 @@ const {
 const { Boom } = require('@hapi/boom');
 const pino   = require('pino');
 const qrcode = require('qrcode-terminal');
+const telegram = require('./telegram');
 
 /* ============================================================
  * 1. CONFIG
@@ -600,11 +601,13 @@ async function generateReply(jid, customerMessage) {
 let sock = null;
 
 async function notifyAdmins(message) {
-  if (!sock) return;
-  for (const jid of ADMIN_JIDS) {
-    try { await sock.sendMessage(jid, { text: message }); }
-    catch (e) { console.error('[ERROR] Admin notify:', e.message); }
+  if (sock) {
+    for (const jid of ADMIN_JIDS) {
+      try { await sock.sendMessage(jid, { text: message }); }
+      catch (e) { console.error('[ERROR] Admin notify:', e.message); }
+    }
   }
+  await telegram.sendTelegramMessage(message);
 }
 
 function buildLeadCard(jid, lead, state) {
@@ -780,6 +783,78 @@ function startFollowUpJob() {
 }
 
 /* ============================================================
+ * 7.7. TELEGRAM BOT HELPERS
+ * ============================================================ */
+
+function getStatusText() {
+  const chats      = Object.keys(memory).length;
+  const qualified  = Object.values(memory).filter(s => s.lead?.qualified).length;
+  const hotLeads   = Object.values(memory).filter(s => ['payment_pending','booking_started','hot_lead','booking_intent'].includes(s.lead?.stage)).length;
+  const booked     = Object.values(memory).filter(s => s.lead?.stage === 'confirmed').length;
+  const model      = getActiveModel();
+  
+  return `📊 *Bot Status*\n\n` +
+    `• *AI Replies:* ${config.botEnabled ? '🟢 ON' : '🔴 OFF'}\n` +
+    `• *Active Model:* ${model.name}\n` +
+    `• *WhatsApp:* ${connected ? '🟢 Connected' : '🔴 Disconnected'}\n` +
+    `• *Total Chats:* ${chats}\n` +
+    `• *Qualified Leads:* ${qualified}\n` +
+    `• *Hot Leads:* ${hotLeads}\n` +
+    `• *Confirmed Bookings:* ${booked}`;
+}
+
+function getLeadsText() {
+  const hot = Object.entries(memory)
+    .filter(([, s]) => ['payment_pending','booking_started','hot_lead','booking_intent'].includes(s.lead?.stage))
+    .map(([jid, s]) => `• \`+${jid.replace('@s.whatsapp.net','').replace('@lid','')}\` — *${s.lead.stage}* — ${s.lead.name || s.lead.booking?.name || 'No Name'}`)
+    .join('\n') || 'No hot leads right now.';
+  return `🔥 *Hot Leads*\n\n${hot}`;
+}
+
+function getTelegramModels() {
+  return AI_MODELS.map(m => ({
+    id: m.id,
+    name: m.name,
+    active: m.id === activeModelId
+  }));
+}
+
+function switchAiModel(id) {
+  const found = AI_MODELS.find(m => m.id === id);
+  if (found) {
+    activeModelId = id;
+    config.activeModel = id;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    return found.name;
+  }
+  return null;
+}
+
+function toggleAiReplies() {
+  config.botEnabled = !config.botEnabled;
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  return config.botEnabled;
+}
+
+function startWhatsApp() {
+  if (connected) return 'Already connected';
+  shouldReconnect = true;
+  connectToWhatsApp();
+  return 'Starting WhatsApp connection...';
+}
+
+function stopWhatsApp() {
+  if (!connected && !sock) return 'Already stopped';
+  shouldReconnect = false;
+  if (sock) {
+    try { sock.end(); } catch (e) {}
+    sock = null;
+  }
+  connected = false;
+  return 'Stopped WhatsApp connection.';
+}
+
+/* ============================================================
  * 8. ADMIN COMMANDS
  * ============================================================ */
 
@@ -799,27 +874,11 @@ async function handleAdminCommand(jid, text) {
     return true;
   }
   if (cmd === '/status') {
-    const chats      = Object.keys(memory).length;
-    const qualified  = Object.values(memory).filter(s => s.lead?.qualified).length;
-    const hotLeads   = Object.values(memory).filter(s => ['payment_pending','booking_started'].includes(s.lead?.stage)).length;
-    const booked     = Object.values(memory).filter(s => s.lead?.stage === 'confirmed').length;
-    await sock.sendMessage(jid, {
-      text: `📊 *Bot Status*\n\n` +
-        `AI: ${config.botEnabled ? '✅ ON' : '❌ OFF'}\n` +
-        `WhatsApp: ✅ Connected\n` +
-        `Total chats: ${chats}\n` +
-        `Qualified leads: ${qualified}\n` +
-        `Hot leads (payment pending): ${hotLeads}\n` +
-        `Confirmed bookings: ${booked}`,
-    });
+    await sock.sendMessage(jid, { text: getStatusText() });
     return true;
   }
   if (cmd === '/leads') {
-    const hot = Object.entries(memory)
-      .filter(([, s]) => ['payment_pending','booking_started','hot_lead'].includes(s.lead?.stage))
-      .map(([jid, s]) => `• ${jid.replace('@s.whatsapp.net','').replace('@lid','')} — ${s.lead.stage} — ${s.lead.booking?.name || 'no name'}`)
-      .join('\n') || 'No hot leads right now.';
-    await sock.sendMessage(jid, { text: `🔥 *Hot Leads*\n\n${hot}` });
+    await sock.sendMessage(jid, { text: getLeadsText() });
     return true;
   }
   if (cmd === '/reasoning on') {
@@ -870,6 +929,7 @@ async function handleAdminCommand(jid, text) {
  * ============================================================ */
 
 let connected = false;
+let shouldReconnect = true;
 
 async function connectToWhatsApp() {
   if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -903,10 +963,12 @@ async function connectToWhatsApp() {
     if (qr) {
       console.log('\n[INFO] Scan QR code with WhatsApp (Linked Devices):\n');
       qrcode.generate(qr, { small: true });
+      await telegram.sendTelegramQrCode(qr);
     }
     if (connection === 'open') {
       connected = true;
       console.log('\n✅ Connected Successfully\n');
+      telegram.sendTelegramMessage('✅ *WhatsApp Connected Successfully!*');
       // Resolve admin phone numbers to LIDs (newer WhatsApp uses @lid JIDs)
       for (const num of adminNumbers) {
         try {
@@ -927,11 +989,13 @@ async function connectToWhatsApp() {
       connected = false;
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.log(`\n❌ WhatsApp Disconnected (code ${reason})`);
-      if (reason !== DisconnectReason.loggedOut) {
+      telegram.sendTelegramMessage(`❌ *WhatsApp Disconnected* (code *${reason}*)`);
+      if (shouldReconnect && reason !== DisconnectReason.loggedOut) {
         console.log('[INFO] Reconnecting in 5s...');
+        telegram.sendTelegramMessage('🔄 *Reconnecting in 5s...*');
         setTimeout(connectToWhatsApp, 5000);
       } else {
-        console.log('[INFO] Logged out. Delete auth_info/ and restart to re-link.');
+        console.log('[INFO] Connection closed. Auto-reconnect is disabled or logged out.');
       }
     }
   });
@@ -1181,6 +1245,8 @@ async function handleMessage(msg) {
     pushHistory(jid, 'assistant', reply);
     await sock.sendMessage(jid, { text: reply });
     console.log(`[REPLY] → ${jid}: ${reply.slice(0, 80).replace(/\n/g, ' ')}...`);
+    const logMsg = `💬 *Chat Update*\n📱 \`+${jid.replace('@s.whatsapp.net','').replace('@lid','')}\`\n👤 *${state.lead.name || 'Unknown'}*\n\n*User:* "${displayText.slice(0, 200)}"\n*AI:* "${reply.slice(0, 200)}"`;
+    telegram.sendTelegramMessage(logMsg);
 
     // Send itinerary PDF if they asked for it
     if (intent === 'ITINERARY') {
@@ -1302,4 +1368,20 @@ process.on('unhandledRejection', err => console.error('[ERROR] Unhandled rejecti
 process.on('uncaughtException',  err => console.error('[ERROR] Uncaught exception:',  err?.message || err));
 
 console.log('[INFO] Starting Ghumakkars WhatsApp Bot...');
+
+// Initialize Telegram bot
+telegram.initTelegramBot(
+  config.telegramBotToken,
+  config.telegramChatId,
+  handleAdminCommand,
+  getStatusText,
+  getLeadsText,
+  getTelegramModels,
+  switchAiModel,
+  toggleAiReplies,
+  startWhatsApp,
+  stopWhatsApp
+);
+
 connectToWhatsApp();
+
