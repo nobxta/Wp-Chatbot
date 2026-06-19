@@ -263,6 +263,26 @@ const AI_MODELS = [
     maxTokens: 600,
     // thinking param causes garbage output; without it causes 500 — avoid
   },
+  {
+    id: 7,
+    name: 'NVIDIA — LLaMA 4 Maverick 17B',
+    provider: 'nvidia',
+    model: 'meta/llama-4-maverick-17b-128e-instruct',
+    apiKey: () => config.nvidiaApiKey5,
+    maxTokens: 512,
+  },
+  {
+    id: 8,
+    name: 'NVIDIA — Nemotron-3 Ultra 550B',
+    provider: 'nvidia',
+    model: 'nvidia/nemotron-3-ultra-550b-a55b',
+    apiKey: () => config.nvidiaApiKey6,
+    maxTokens: 4096,
+    extraBody: {
+      chat_template_kwargs: { enable_thinking: true },
+      reasoning_budget: 4096
+    }
+  },
 ];
 
 // Active model index — persisted in config.json
@@ -535,7 +555,13 @@ async function callAI(messages) {
         const res = await client.chat.completions.create(params);
         const msg = res.choices?.[0]?.message;
         const showReasoning = config.showReasoning === true;
-        const text = (msg?.content || (showReasoning ? msg?.reasoning_content : '') || '').trim();
+        let text = (msg?.content || '').trim();
+        if (showReasoning && msg?.reasoning_content) {
+          const reasoning = msg.reasoning_content.trim();
+          if (reasoning) {
+            text = text ? `*🧠 Thinking Process:*\n${reasoning}\n\n*Response:*\n${text}` : reasoning;
+          }
+        }
         if (!text) console.warn(`[WARN] NVIDIA (${model.model}) returned empty. finish_reason: ${res.choices?.[0]?.finish_reason}`);
         if (text) return text;
       } catch (err) {
