@@ -1470,6 +1470,8 @@ async function handleMessage(msg) {
     pushHistory(jid, 'assistant', reply);
     await sock.sendMessage(jid, { text: reply });
     console.log(`[REPLY] → ${jid}: ${reply.slice(0, 80).replace(/\n/g, ' ')}...`);
+
+
     // Send itinerary PDF if they asked for it
     if (intent === 'ITINERARY') {
       const pdfPath = './itinerary.pdf';
