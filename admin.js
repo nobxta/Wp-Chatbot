@@ -861,10 +861,49 @@ function initTelegramBot() {
     } catch (e) { /* ignore expired query */ }
 
     try {
-      if (action === 'toggle_ai') {
+      if (action === 'status') {
+        const statusText = getStatusText();
+        await tgBot.sendMessage(cid, statusText, { parse_mode: 'Markdown' });
+      } else if (action === 'toggle_ai') {
         config.botEnabled = !config.botEnabled;
         fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
         await tgBot.sendMessage(cid, `🤖 AI Response: *${config.botEnabled ? 'ENABLED (Yes)' : 'DISABLED (No)'}*`, { parse_mode: 'Markdown' });
+        sendControlPanel(cid, msg.message_id);
+      } else if (action === 'select_model') {
+        const keyboard = AI_MODELS.map(m => [{
+          text: `${m.id === activeModelId ? '✅ ' : ''}${m.name}`,
+          callback_data: `set_model_${m.id}`
+        }]);
+        keyboard.push([{ text: '🔙 Back to Menu', callback_data: 'main_menu' }]);
+
+        await tgBot.editMessageText('🤖 *Select AI Model:*', {
+          chat_id: cid,
+          message_id: msg.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: keyboard }
+        });
+      } else if (action === 'main_menu') {
+        sendControlPanel(cid, msg.message_id);
+      } else if (action.startsWith('set_model_')) {
+        const modelId = parseInt(action.replace('set_model_', ''), 10);
+        const found = AI_MODELS.find(m => m.id === modelId);
+        if (found) {
+          activeModelId = modelId;
+          config.activeModel = modelId;
+          fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+          await tgBot.sendMessage(cid, `✅ Switched AI model to: *${found.name}*`, { parse_mode: 'Markdown' });
+        } else {
+          await tgBot.sendMessage(cid, `❌ Error switching model.`);
+        }
+        sendControlPanel(cid, msg.message_id);
+      } else if (action === 'login_wa') {
+        if (connected) {
+          await tgBot.sendMessage(cid, '🟢 *WhatsApp is already connected!*', { parse_mode: 'Markdown' });
+          return;
+        }
+        await tgBot.sendMessage(cid, '🔑 *Starting WhatsApp connection...*', { parse_mode: 'Markdown' });
+        shouldReconnect = true;
+        connectToWhatsApp();
         sendControlPanel(cid, msg.message_id);
       } else if (action === 'logout_wa') {
         if (!sock) {
@@ -902,22 +941,37 @@ function sendControlPanel(targetId = tgChatId, editMessageId = null) {
 
   const aiStatus = config.botEnabled ? 'Yes ✅' : 'No ❌';
   const waStatus = connected ? 'Connected 🟢' : 'Disconnected 🔴';
+  const activeModel = getActiveModel().name;
 
   const text = `🛠 *Ghumakkars WhatsApp Bot Control Panel*\n\n` +
                `• *WhatsApp Status:* ${waStatus}\n` +
-               `• *AI Response:* ${aiStatus}\n\n` +
+               `• *AI Response:* ${aiStatus}\n` +
+               `• *Active Model:* ${activeModel}\n\n` +
                `Choose an action:`;
-               
-  const replyMarkup = {
-    inline_keyboard: [
-      [
-        { text: `🤖 AI Response: ${config.botEnabled ? 'Disable ❌' : 'Enable ✅'}`, callback_data: 'toggle_ai' }
-      ],
-      [
-        { text: '🚪 Logout WhatsApp', callback_data: 'logout_wa' }
-      ]
+
+  const inlineKeyboard = [
+    [
+      { text: '📊 Status', callback_data: 'status' }
+    ],
+    [
+      { text: `🤖 AI Response: ${config.botEnabled ? 'Disable ❌' : 'Enable ✅'}`, callback_data: 'toggle_ai' }
+    ],
+    [
+      { text: '🤖 Select Model', callback_data: 'select_model' }
     ]
-  };
+  ];
+
+  if (connected) {
+    inlineKeyboard.push([
+      { text: '🚪 Logout WhatsApp', callback_data: 'logout_wa' }
+    ]);
+  } else {
+    inlineKeyboard.push([
+      { text: '🔑 Login / Start WhatsApp', callback_data: 'login_wa' }
+    ]);
+  }
+
+  const replyMarkup = { inline_keyboard: inlineKeyboard };
 
   if (editMessageId) {
     tgBot.editMessageText(text, {
