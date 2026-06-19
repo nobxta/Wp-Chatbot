@@ -1013,7 +1013,28 @@ async function handleMessage(msg) {
   if (!displayText) return;
 
   const state         = getChatState(jid);
-  const isFirstMsg    = state.history.length === 0 && !state.welcomed;
+  const isAdWelcome   = displayText.trim().toLowerCase().includes("can i get more info on this");
+  if (isAdWelcome) {
+    state.lead = {
+      stage: 'new',
+      name: null,
+      destination: null,
+      travellers: null,
+      departureCity: null,
+      travelDate: null,
+      groupType: null,
+      qualified: false,
+      bookingStep: null,
+      booking: {},
+      abuseCount: 0,
+      followUpSent: false
+    };
+    state.history = [];
+    state.welcomed = false;
+    saveMemory();
+    console.log(`[AD WELCOME] Fully reset chat state for ${jid} due to click-to-WhatsApp ad message.`);
+  }
+  const isFirstMsg    = (state.history.length === 0 && !state.welcomed) || isAdWelcome;
   const lead          = state.lead;
 
   // Ignore pure gibberish (only symbols/spaces, no alphanumeric content)
@@ -1157,6 +1178,30 @@ async function handleMessage(msg) {
     pushHistory(jid, 'assistant', reply);
     await sock.sendMessage(jid, { text: reply });
     console.log(`[REPLY] → ${jid}: ${reply.slice(0, 80).replace(/\n/g, ' ')}...`);
+
+    // Send itinerary PDF if they asked for it
+    if (intent === 'ITINERARY') {
+      const pdfPath = './itinerary.pdf';
+      if (fs.existsSync(pdfPath)) {
+        try {
+          await sock.sendMessage(jid, {
+            document: { url: pdfPath },
+            mimetype: 'application/pdf',
+            fileName: 'Ghumakkars_Manali_Kasol_Itinerary.pdf',
+            caption: 'Ghumakkars Trip Itinerary'
+          });
+          
+          const followUpText = `Yeh full itinerary hai, isse read aur check kar lijiye. Agar koi help chahiye toh batayein 😊`;
+          pushHistory(jid, 'assistant', followUpText);
+          await sock.sendMessage(jid, { text: followUpText });
+          console.log(`[ITINERARY PDF SENT] → ${jid}`);
+        } catch (e) {
+          console.error('[ERROR] Sending itinerary PDF:', e.message);
+        }
+      } else {
+        console.warn(`[WARN] itinerary.pdf not found at ${pdfPath}. Please place the PDF file there to enable PDF sending.`);
+      }
+    }
 
     // Update lead stage in background (use combined text so buffered msgs are scanned)
     updateLeadStage(jid, combinedText).catch(e => console.error('[ERROR] Lead update:', e.message));
