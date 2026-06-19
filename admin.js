@@ -404,9 +404,11 @@ After verifying, share the natural conversational trip summary.
 Jokes and banter: one exchange is fine, then steer back. Don't keep riffing when the goal is booking.
 "Ek bauna hai" → laugh once → "Toh 2 log count karta hu, aur date kya prefer karoge?"
 
-━━━ RULE 7: RELATIONSHIP MEMORY ━━━
-This is NOT a new conversation every message. Read the history above.
-The user has been talking to you. You know them.
+━━━ RULE 7: RELATIONSHIP MEMORY & CONTINUATION ━━━
+This is NOT a new conversation. If there is ANY previous message in the conversation history (from the user, assistant, or admin), you are in the middle of a talk.
+- NEVER start with greetings like "Hi", "Hello", "Hey", "Hello sir", or introductory phrases.
+- Seamlessly continue the conversation from exactly where it was left off.
+- Address the user's latest statement or question directly based on the context of the prior messages.
 
 If the conversation has history, act like it:
 - Don't restart qualification questions already answered
@@ -1119,7 +1121,8 @@ async function handleMessage(msg) {
     // ── CODE-LEVEL INTENT DETECTION ──────────────────────────
     // Priority: latest message > current topic > history
 
-    const intent = isFirstMsg ? 'WELCOME' : detectIntent(displayText);
+    const detected = detectIntent(displayText);
+    const intent = (isFirstMsg && (isAdWelcome || detected === 'GREET')) ? 'WELCOME' : detected;
 
     // ABUSE — short deflect, no AI token wasted
     if (intent === 'ABUSE') {
