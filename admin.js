@@ -43,6 +43,10 @@ const QRCode = require('qrcode');
 
 let tgBot = null;
 let tgChatId = null;
+let lastQrSentTime = 0;
+let lastQrMsgId = null;
+let lastMenuMsgId = null;
+let connecting = false;
 
 /* ============================================================
  * 1. CONFIG
@@ -902,6 +906,7 @@ function initTelegramBot() {
           return;
         }
         await tgBot.sendMessage(cid, '🔑 *Starting WhatsApp connection...*', { parse_mode: 'Markdown' });
+        connecting = true;
         shouldReconnect = true;
         connectToWhatsApp();
         sendControlPanel(cid, msg.message_id);
@@ -940,7 +945,14 @@ function sendControlPanel(targetId = tgChatId, editMessageId = null) {
   if (!tgBot || !targetId) return;
 
   const aiStatus = config.botEnabled ? 'Yes ✅' : 'No ❌';
-  const waStatus = connected ? 'Connected 🟢' : 'Disconnected 🔴';
+  
+  let waStatus = 'Disconnected 🔴';
+  if (connected) {
+    waStatus = 'Connected 🟢';
+  } else if (connecting) {
+    waStatus = 'Connecting... 🔄';
+  }
+
   const activeModel = getActiveModel().name;
 
   const text = `🛠 *Ghumakkars WhatsApp Bot Control Panel*\n\n` +
@@ -973,17 +985,32 @@ function sendControlPanel(targetId = tgChatId, editMessageId = null) {
 
   const replyMarkup = { inline_keyboard: inlineKeyboard };
 
-  if (editMessageId) {
+  const targetMsgId = editMessageId || (targetId === tgChatId ? lastMenuMsgId : null);
+
+  if (targetMsgId) {
     tgBot.editMessageText(text, {
       chat_id: targetId,
-      message_id: editMessageId,
+      message_id: targetMsgId,
       parse_mode: 'Markdown',
       reply_markup: replyMarkup
-    }).catch(() => {});
+    }).then((m) => {
+      if (targetId === tgChatId) lastMenuMsgId = m.message_id;
+    }).catch(() => {
+      if (!editMessageId && targetId === tgChatId) {
+        tgBot.sendMessage(targetId, text, {
+          parse_mode: 'Markdown',
+          reply_markup: replyMarkup
+        }).then((m) => {
+          lastMenuMsgId = m.message_id;
+        });
+      }
+    });
   } else {
     tgBot.sendMessage(targetId, text, {
       parse_mode: 'Markdown',
       reply_markup: replyMarkup
+    }).then((m) => {
+      if (targetId === tgChatId) lastMenuMsgId = m.message_id;
     });
   }
 }
@@ -1000,10 +1027,19 @@ async function sendTelegramMessage(text) {
 async function sendTelegramQrCode(qrString) {
   if (!tgBot || !tgChatId) return;
   try {
+    // If there is an existing QR message, delete it first to avoid clutter
+    if (lastQrMsgId) {
+      try {
+        await tgBot.deleteMessage(tgChatId, lastQrMsgId);
+      } catch (e) {}
+      lastQrMsgId = null;
+    }
+
     const buffer = await QRCode.toBuffer(qrString, { width: 300 });
-    await tgBot.sendPhoto(tgChatId, buffer, {
+    const sentMsg = await tgBot.sendPhoto(tgChatId, buffer, {
       caption: '🔑 *WhatsApp QR Login*\nScan this QR code in WhatsApp to link your device.'
     });
+    lastQrMsgId = sentMsg.message_id;
   } catch (e) {
     console.error('[TELEGRAM ERROR] Failed to send QR code photo:', e.message);
   }
@@ -1118,12 +1154,29 @@ async function connectToWhatsApp() {
     if (qr) {
       console.log('\n[INFO] Scan QR code with WhatsApp (Linked Devices):\n');
       qrcode.generate(qr, { small: true });
-      await sendTelegramQrCode(qr);
+      const now = Date.now();
+      if (now - lastQrSentTime > 60000) {
+        lastQrSentTime = now;
+        await sendTelegramQrCode(qr);
+      }
     }
     if (connection === 'open') {
       connected = true;
+      connecting = false;
       console.log('\n✅ Connected Successfully\n');
       sendTelegramMessage('✅ *WhatsApp Connected Successfully!*');
+      
+      // Delete QR message if it exists
+      if (lastQrMsgId) {
+        try {
+          await tgBot.deleteMessage(tgChatId, lastQrMsgId);
+        } catch (e) {}
+        lastQrMsgId = null;
+      }
+      
+      // Refresh control panel live status
+      sendControlPanel();
+
       // Resolve admin phone numbers to LIDs (newer WhatsApp uses @lid JIDs)
       for (const num of adminNumbers) {
         try {
@@ -1145,13 +1198,18 @@ async function connectToWhatsApp() {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.log(`\n❌ WhatsApp Disconnected (code ${reason})`);
       sendTelegramMessage(`❌ *WhatsApp Disconnected* (code *${reason}*)`);
+
       if (shouldReconnect && reason !== DisconnectReason.loggedOut) {
         console.log('[INFO] Reconnecting in 5s...');
         sendTelegramMessage('🔄 *Reconnecting in 5s...*');
         setTimeout(connectToWhatsApp, 5000);
       } else {
+        connecting = false;
         console.log('[INFO] Connection closed. Auto-reconnect is disabled or logged out.');
       }
+      
+      // Refresh control panel live status
+      sendControlPanel();
     }
   });
 
@@ -1527,5 +1585,11 @@ console.log('[INFO] Starting Ghumakkars WhatsApp Bot...');
 // Initialize Telegram bot
 initTelegramBot();
 
-connectToWhatsApp();
+const CREDS_PATH = path.join(AUTH_DIR, 'creds.json');
+if (fs.existsSync(CREDS_PATH)) {
+  console.log('[INFO] Saved session credentials found. Connecting to WhatsApp...');
+  connectToWhatsApp();
+} else {
+  console.log('[INFO] No saved session credentials found. Waiting for Telegram login command...');
+}
 
